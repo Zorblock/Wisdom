@@ -1,5 +1,6 @@
 mod auth;
 mod minecraft;
+mod profile;
 mod storage;
 
 use anyhow::Result;
@@ -25,8 +26,8 @@ fn main() -> Result<()> {
 
     let window = AppWindow::new()?;
     window.set_accent_color(accent_color());
-    window.set_status_text("Versionen werden geladen …".into());
-    window.set_account_name(storage::load_auth().map(|auth| auth.player_name).unwrap_or_default().into());
+    window.set_status_text("Loading versions …".into());
+    if let Ok(auth) = storage::load_auth() { update_account(&window, &data_dir, auth); }
 
     let versions = Arc::new(Mutex::new(Vec::<ManifestVersion>::new()));
     let selected = Arc::new(Mutex::new(String::new()));
@@ -57,11 +58,11 @@ fn load_version_list(window: &AppWindow, versions: &Arc<Mutex<Vec<ManifestVersio
                 ui.set_versions(ModelRc::new(VecModel::from(rows)));
                 ui.set_selected_version(default_id.into());
                 ui.set_selected_version_index(release_index);
-                ui.set_status_text("Wähle eine Version und starte dein Spiel.".into());
+                ui.set_status_text("Choose a version and start playing.".into());
             });
         }
         Err(error) => {
-            let message = format!("Versionen konnten nicht geladen werden: {error:#}");
+            let message = format!("Could not load versions: {error:#}");
             let _ = slint::invoke_from_event_loop(move || if let Some(ui) = weak.upgrade() { ui.set_status_text(message.into()); });
         }
     });
@@ -86,7 +87,7 @@ fn bind_login(window: &AppWindow, _data_dir: &std::path::Path, active_login: &Ar
     window.on_login(move || {
         if let Some(ui) = weak.upgrade() {
             ui.set_busy(true);
-            ui.set_copy_button_text("Code kopieren".into());
+            ui.set_copy_button_text("Copy code".into());
         }
         let cancelled = Arc::new(AtomicBool::new(false));
         if let Ok(mut active) = active_login.lock() { *active = Some(Arc::clone(&cancelled)); }
@@ -109,9 +110,9 @@ fn bind_login(window: &AppWindow, _data_dir: &std::path::Path, active_login: &Ar
                 ui.set_show_login_dialog(false);
                 ui.set_login_code("".into());
                 match outcome {
-                    Ok(auth) => { ui.set_account_name(auth.player_name.into()); ui.set_status_text("Konto bestätigt. Du kannst starten.".into()); }
-                    Err(_error) if cancelled.load(Ordering::Relaxed) => ui.set_status_text("Anmeldung abgebrochen.".into()),
-                    Err(error) => ui.set_status_text(format!("Anmeldung fehlgeschlagen: {error:#}").into()),
+                    Ok(auth) => { update_account(&ui, &storage::user_data_dir().unwrap_or_default(), auth); ui.set_status_text("Signed in. Ready to play.".into()); }
+                    Err(_error) if cancelled.load(Ordering::Relaxed) => ui.set_status_text("Sign-in cancelled.".into()),
+                    Err(error) => ui.set_status_text(format!("Sign-in failed: {error:#}").into()),
                 }
             });
         });
@@ -124,7 +125,7 @@ fn bind_copy_and_cancel(window: &AppWindow, active_login: &Arc<Mutex<Option<Arc<
         let Some(ui) = weak.upgrade() else { return; };
         let code = ui.get_login_code().to_string();
         if !code.is_empty() && ClipboardContext::new().and_then(|mut clipboard| clipboard.set_contents(code)).is_ok() {
-            ui.set_copy_button_text("Kopiert ✓".into());
+            ui.set_copy_button_text("Copied ✓".into());
         }
     });
 
@@ -135,7 +136,7 @@ fn bind_copy_and_cancel(window: &AppWindow, active_login: &Arc<Mutex<Option<Arc<
         if let Some(ui) = weak.upgrade() {
             ui.set_show_login_dialog(false);
             ui.set_login_code("".into());
-            ui.set_status_text("Anmeldung wird abgebrochen …".into());
+            ui.set_status_text("Cancelling sign-in …".into());
         }
     });
 }
@@ -161,7 +162,7 @@ fn bind_game_start(window: &AppWindow, data_dir: &std::path::Path, versions: &Ar
             })();
             let _ = slint::invoke_from_event_loop(move || if let Some(ui) = weak_done.upgrade() {
                 ui.set_busy(false);
-                match outcome { Ok(()) => ui.set_status_text("Minecraft wurde gestartet.".into()), Err(error) => ui.set_status_text(format!("Start fehlgeschlagen: {error:#}").into()) }
+                match outcome { Ok(()) => ui.set_status_text("Minecraft started.".into()), Err(error) => ui.set_status_text(format!("Could not start: {error:#}").into()) }
             });
         });
     });
@@ -172,6 +173,18 @@ fn status_reporter(weak: slint::Weak<AppWindow>) -> Reporter {
         let weak = weak.clone();
         let _ = slint::invoke_from_event_loop(move || if let Some(ui) = weak.upgrade() { ui.set_status_text(message.into()); });
     })
+}
+
+fn update_account(window: &AppWindow, data_dir: &std::path::Path, auth: storage::AuthState) {
+    window.set_account_name(auth.player_name.clone().into());
+    let weak = window.as_weak();
+    let root = data_dir.to_owned();
+    thread::spawn(move || {
+        let Ok(path) = profile::cached_skin(&root, &auth) else { return; };
+        let _ = slint::invoke_from_event_loop(move || {
+            if let (Some(ui), Ok(image)) = (weak.upgrade(), slint::Image::load_from_path(&path)) { ui.set_player_head(image); }
+        });
+    });
 }
 
 fn accent_color() -> slint::Color {

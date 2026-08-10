@@ -29,9 +29,10 @@ export component AppWindow inherits Window {
     in property <int> selected-version-index;
     in property <string> selected-version;
     in property <string> account-name;
+    in property <image> player-head;
     in property <string> status-text;
     in property <string> login-code;
-    in property <string> copy-button-text: "Code kopieren";
+    in property <string> copy-button-text: "Copy code";
     in property <bool> busy;
     in property <bool> show-login-dialog: false;
     in property <color> accent-color: #6ea8fe;
@@ -69,13 +70,40 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
             }
             Rectangle { horizontal-stretch: 1; }
-            AccentButton {
-                text: root.account-name == "" ? "Mit Microsoft anmelden" : root.account-name;
+            if root.account-name == "": AccentButton {
+                text: "Sign in with Microsoft";
                 enabled: !root.busy;
                 min-width: 210px;
                 min-height: 38px;
-                fill: root.account-name == "" ? root.accent-color : #22252d;
+                fill: root.accent-color;
                 clicked => { root.login(); }
+            }
+            if root.account-name != "": Rectangle {
+                min-width: 210px;
+                min-height: 38px;
+                background: #22252d;
+                border-radius: 8px;
+                Image {
+                    x: 7px;
+                    y: 5px;
+                    width: 28px;
+                    height: 28px;
+                    source: root.player-head;
+                    source-clip-x: 8;
+                    source-clip-y: 8;
+                    source-clip-width: 8;
+                    source-clip-height: 8;
+                    image-fit: fill;
+                }
+                Text {
+                    x: 44px;
+                    width: parent.width - 54px;
+                    text: root.account-name;
+                    color: #ffffff;
+                    font-size: 14px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
             }
         }
 
@@ -89,7 +117,7 @@ export component AppWindow inherits Window {
                 width: 520px;
                 spacing: 14px;
                 Text {
-                text: root.busy ? "Bitte warten" : (root.account-name == "" ? "Bereit, wenn du es bist" : "Willkommen zurück, " + root.account-name);
+                text: root.busy ? "Please wait" : (root.account-name == "" ? "Ready when you are" : "Welcome back, " + root.account-name);
                 color: #f4f6fb;
                 font-size: 30px;
                 font-weight: 700;
@@ -105,7 +133,7 @@ export component AppWindow inherits Window {
             }
                 Rectangle { height: 12px; }
                 AccentButton {
-                text: root.busy ? "Wird vorbereitet …" : "Start " + root.selected-version;
+                text: root.busy ? "Preparing …" : "Start " + root.selected-version;
                 enabled: !root.busy && root.selected-version != "";
                 min-width: 310px;
                 min-height: 58px;
@@ -128,7 +156,7 @@ export component AppWindow inherits Window {
 
         Rectangle { vertical-stretch: 1; }
         Text {
-            text: "Vanilla  •  Windows  •  Deine Daten bleiben auf diesem Gerät";
+            text: "Vanilla  •  Windows  •  Your data stays on this device";
             color: #727987;
             font-size: 12px;
             horizontal-alignment: center;
@@ -156,14 +184,14 @@ export component AppWindow inherits Window {
                 padding: 28px;
                 spacing: 14px;
                 Text {
-                    text: "Microsoft anmelden";
+                    text: "Sign in with Microsoft";
                     color: #f4f6fb;
                     font-size: 22px;
                     font-weight: 700;
                     horizontal-alignment: center;
                 }
                 Text {
-                    text: "Im Browser den Code eingeben";
+                    text: "Enter this code in your browser";
                     color: #aab0bd;
                     font-size: 14px;
                     horizontal-alignment: center;
@@ -189,7 +217,7 @@ export component AppWindow inherits Window {
                     clicked => { root.copy-login-code(); }
                 }
                 AccentButton {
-                    text: "Abbrechen";
+                    text: "Cancel";
                     min-height: 38px;
                     fill: #30333a;
                     clicked => { root.cancel-login(); }

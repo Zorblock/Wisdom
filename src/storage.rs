@@ -14,6 +14,8 @@ pub struct AuthState {
     pub expires_at: DateTime<Utc>,
     pub player_name: String,
     pub player_uuid: String,
+    #[serde(default)]
+    pub skin_url: Option<String>,
 }
 
 pub fn user_data_dir() -> Result<PathBuf> {
@@ -30,7 +32,7 @@ pub fn prepare_storage(root: &Path) -> Result<()> {
 
 pub fn load_auth() -> Result<AuthState> {
     let serialized = keyring::Entry::new("Wisdom Minecraft Launcher", "minecraft-session")?
-        .get_password().context("keine gespeicherte Microsoft-Sitzung")?;
+        .get_password().context("no saved Microsoft session")?;
     Ok(serde_json::from_str(&serialized)?)
 }
 
@@ -41,8 +43,8 @@ pub fn save_auth(auth: &AuthState) -> Result<()> {
 }
 
 pub fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {
-    serde_json::from_reader(File::open(path).with_context(|| format!("{} öffnen", path.display()))?)
-        .with_context(|| format!("{} lesen", path.display()))
+    serde_json::from_reader(File::open(path).with_context(|| format!("could not open {}", path.display()))?)
+        .with_context(|| format!("could not read {}", path.display()))
 }
 
 pub fn http() -> Result<Client> {

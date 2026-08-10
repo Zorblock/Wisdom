@@ -55,14 +55,14 @@ pub fn load_versions() -> Result<(VersionManifest, Vec<ManifestVersion>)> {
 
 pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState, report: &(dyn Fn(String) + Send + Sync)) -> Result<()> {
     let client = http()?;
-    report(format!("Lade Minecraft {}-Metadaten …", entry.id));
+    report(format!("Loading Minecraft {} metadata …", entry.id));
     let meta: VersionMeta = client.get(&entry.url).send()?.error_for_status()?.json()?;
     let version_dir = root.join("versions").join(&meta.id);
     fs::create_dir_all(&version_dir)?;
     let client_jar = version_dir.join(format!("{}.jar", meta.id));
     download_file(&client, &meta.downloads.client, &client_jar)?;
 
-    report("Lade Bibliotheken und Windows-Komponenten …".into());
+    report("Downloading libraries and Windows components …".into());
     let mut classpath = vec![client_jar];
     let natives_dir = root.join("natives").join(&meta.id);
     fs::create_dir_all(&natives_dir)?;
@@ -85,7 +85,7 @@ pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState
 
     let assets_root = root.join("assets");
     let assets_index_name = if let Some(asset_index) = &meta.asset_index {
-        report("Lade Spielressourcen …".into());
+        report("Downloading game assets …".into());
         let index_path = assets_root.join("indexes").join(format!("{}.json", asset_index.path.clone().unwrap_or_else(|| asset_index.url.rsplit('/').next().unwrap_or("index.json").to_owned())));
         download_file(&client, asset_index, &index_path)?;
         let index: AssetIndex = read_json(&index_path)?;
@@ -99,7 +99,7 @@ pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState
         meta.asset_index.as_ref().and_then(|d| d.path.clone()).unwrap_or_else(|| index_path.file_stem().unwrap_or_default().to_string_lossy().to_string())
     } else { String::new() };
 
-    report("Starte Java …".into());
+    report("Starting Java …".into());
     let game_dir = root.join("game");
     fs::create_dir_all(&game_dir)?;
     let classpath_text = std::env::join_paths(&classpath)?.to_string_lossy().to_string();
@@ -112,17 +112,17 @@ pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState
     let (mut jvm_args, game_args) = build_arguments(&meta, &substitutions)?;
     if !jvm_args.iter().any(|arg| arg == "-cp" || arg == "-classpath") { jvm_args.extend(["-cp".to_owned(), substitutions["${classpath}"].clone()]); }
     let java = std::env::var_os("JAVA_HOME").map(|home| PathBuf::from(home).join("bin").join("java.exe")).unwrap_or_else(|| PathBuf::from("java"));
-    Command::new(java).args(&jvm_args).arg(&meta.main_class).args(&game_args).current_dir(&game_dir).spawn().context("Java konnte nicht gestartet werden. Installiere Java 21+ oder setze JAVA_HOME")?;
+    Command::new(java).args(&jvm_args).arg(&meta.main_class).args(&game_args).current_dir(&game_dir).spawn().context("Could not start Java. Install Java 21+ or set JAVA_HOME")?;
     Ok(())
 }
 
 fn download_file(client: &Client, source: &Download, destination: &Path) -> Result<()> {
     if destination.exists() && source.sha1.as_ref().is_none_or(|hash| sha1_file(destination).is_ok_and(|actual| actual.eq_ignore_ascii_case(hash))) { return Ok(()); }
-    fs::create_dir_all(destination.parent().context("Downloadziel ohne Ordner")?)?;
+    fs::create_dir_all(destination.parent().context("Download target has no parent directory")?)?;
     let bytes = client.get(&source.url).send()?.error_for_status()?.bytes()?;
     if let Some(expected) = &source.sha1 {
         let actual = format!("{:x}", Sha1::digest(&bytes));
-        if !actual.eq_ignore_ascii_case(expected) { bail!("Prüfsumme stimmt nicht für {}", source.url); }
+        if !actual.eq_ignore_ascii_case(expected) { bail!("Checksum mismatch for {}", source.url); }
     }
     let temporary = destination.with_extension("download");
     File::create(&temporary)?.write_all(&bytes)?;
@@ -135,7 +135,7 @@ fn sha1_file(path: &Path) -> Result<String> {
     loop { let read = file.read(&mut buffer)?; if read == 0 { break; } hasher.update(&buffer[..read]); }
     Ok(format!("{:x}", hasher.finalize()))
 }
-fn library_path(root: &Path, download: &Download) -> Result<PathBuf> { Ok(root.join("libraries").join(download.path.as_ref().context("Bibliothek ohne Pfad")?)) }
+fn library_path(root: &Path, download: &Download) -> Result<PathBuf> { Ok(root.join("libraries").join(download.path.as_ref().context("Library has no path")?)) }
 fn native_classifier(library: &Library) -> Option<String> { library.natives.as_ref()?.get("windows").map(|name| name.replace("${arch}", "64")) }
 fn extract_native(archive: &Path, destination: &Path, extract: Option<&Extract>) -> Result<()> {
     let mut zip = zip::ZipArchive::new(File::open(archive)?)?;
@@ -170,6 +170,6 @@ fn build_arguments(meta: &VersionMeta, replacements: &HashMap<&str, String>) -> 
         let game = arguments.game.iter().flat_map(argument_values).map(|value| replace_variables(value, replacements)).collect();
         return Ok((jvm, game));
     }
-    let game = meta.minecraft_arguments.as_ref().context("Version enthält keine Startargumente")?.split_whitespace().map(|value| replace_variables(value.to_owned(), replacements)).collect();
+    let game = meta.minecraft_arguments.as_ref().context("Version has no launch arguments")?.split_whitespace().map(|value| replace_variables(value.to_owned(), replacements)).collect();
     Ok((vec![], game))
 }
