@@ -20,6 +20,7 @@ zip = { version = "2.2", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
 slint-build = "1.15"
+winres = "0.1"
 
 [profile.release]
 lto = true
