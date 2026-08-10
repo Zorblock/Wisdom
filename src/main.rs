@@ -5,7 +5,6 @@ mod runtime;
 mod storage;
 
 use anyhow::Result;
-use copypasta::{ClipboardContext, ClipboardProvider};
 use minecraft::ManifestVersion;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +18,6 @@ slint::include_modules!();
 // Public desktop-client identifier. Microsoft client IDs are intentionally not secrets.
 const MICROSOFT_CLIENT_ID: &str = "6f216a95-c659-4c83-818b-a4d2c0a6e73f";
 type Reporter = Arc<dyn Fn(String) + Send + Sync>;
-type CodePresenter = Arc<dyn Fn(String) + Send + Sync>;
 type DownloadProgress = Arc<dyn Fn(f32, String) + Send + Sync>;
 
 fn main() -> Result<()> {
@@ -39,7 +37,7 @@ fn main() -> Result<()> {
     load_version_list(&window, &versions, &selected);
     bind_version_selection(&window, &versions, &selected);
     bind_login(&window, &data_dir, &active_login, &reporter);
-    bind_copy_and_cancel(&window, &active_login);
+    bind_cancel_login(&window, &active_login);
     bind_game_start(&window, &data_dir, &versions, &selected, &reporter, &progress);
 
     window.run()?;
@@ -90,28 +88,19 @@ fn bind_login(window: &AppWindow, _data_dir: &std::path::Path, active_login: &Ar
     window.on_login(move || {
         if let Some(ui) = weak.upgrade() {
             ui.set_busy(true);
-            ui.set_copy_button_text("Copy code".into());
+            ui.set_show_login_dialog(true);
         }
         let cancelled = Arc::new(AtomicBool::new(false));
         if let Ok(mut active) = active_login.lock() { *active = Some(Arc::clone(&cancelled)); }
         let weak_done = weak.clone();
-        let weak_code = weak.clone();
         let report = Arc::clone(&reporter);
         let active_login = Arc::clone(&active_login);
-        let present_code: CodePresenter = Arc::new(move |code| {
-            let weak_code = weak_code.clone();
-            let _ = slint::invoke_from_event_loop(move || if let Some(ui) = weak_code.upgrade() {
-                ui.set_login_code(code.into());
-                ui.set_show_login_dialog(true);
-            });
-        });
         thread::spawn(move || {
-            let outcome = auth::login(MICROSOFT_CLIENT_ID, &*report, &*present_code, &cancelled);
+            let outcome = auth::login(MICROSOFT_CLIENT_ID, &*report, &cancelled);
             if let Ok(mut active) = active_login.lock() { *active = None; }
             let _ = slint::invoke_from_event_loop(move || if let Some(ui) = weak_done.upgrade() {
                 ui.set_busy(false);
                 ui.set_show_login_dialog(false);
-                ui.set_login_code("".into());
                 match outcome {
                     Ok(auth) => { update_account(&ui, &storage::user_data_dir().unwrap_or_default(), auth); ui.set_status_text("Signed in. Ready to play.".into()); }
                     Err(_error) if cancelled.load(Ordering::Relaxed) => ui.set_status_text("Sign-in cancelled.".into()),
@@ -122,23 +111,13 @@ fn bind_login(window: &AppWindow, _data_dir: &std::path::Path, active_login: &Ar
     });
 }
 
-fn bind_copy_and_cancel(window: &AppWindow, active_login: &Arc<Mutex<Option<Arc<AtomicBool>>>>) {
-    let weak = window.as_weak();
-    window.on_copy_login_code(move || {
-        let Some(ui) = weak.upgrade() else { return; };
-        let code = ui.get_login_code().to_string();
-        if !code.is_empty() && ClipboardContext::new().and_then(|mut clipboard| clipboard.set_contents(code)).is_ok() {
-            ui.set_copy_button_text("Copied ✓".into());
-        }
-    });
-
+fn bind_cancel_login(window: &AppWindow, active_login: &Arc<Mutex<Option<Arc<AtomicBool>>>>) {
     let weak = window.as_weak();
     let active_login = Arc::clone(active_login);
     window.on_cancel_login(move || {
         if let Some(cancelled) = active_login.lock().ok().and_then(|active| active.clone()) { cancelled.store(true, Ordering::Relaxed); }
         if let Some(ui) = weak.upgrade() {
             ui.set_show_login_dialog(false);
-            ui.set_login_code("".into());
             ui.set_status_text("Cancelling sign-in …".into());
         }
     });

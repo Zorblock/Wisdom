@@ -6475,10 +6475,11 @@ name = "wisdom"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
- "copypasta",
  "keyring",
  "open",
+ "rand 0.9.5",
  "reqwest",
  "serde",
  "serde_json",

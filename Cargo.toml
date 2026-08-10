@@ -6,11 +6,12 @@ description = "A clean Windows Minecraft launcher"
 
 [dependencies]
 anyhow = "1.0"
-copypasta = "0.10"
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 keyring = { version = "3.6", features = ["windows-native"] }
 open = "5.3"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"

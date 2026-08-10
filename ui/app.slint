@@ -31,8 +31,6 @@ export component AppWindow inherits Window {
     in property <string> account-name;
     in property <image> player-head;
     in property <string> status-text;
-    in property <string> login-code;
-    in property <string> copy-button-text: "Copy code";
     in property <bool> busy;
     in property <bool> show-login-dialog: false;
     in property <bool> show-progress: false;
@@ -41,7 +39,6 @@ export component AppWindow inherits Window {
     callback start-game();
     callback select-version(int);
     callback login();
-    callback copy-login-code();
     callback cancel-login();
 
     title: "Wisdom";
@@ -209,30 +206,10 @@ export component AppWindow inherits Window {
                     horizontal-alignment: center;
                 }
                 Text {
-                    text: "Enter this code in your browser";
+                    text: "Finish sign-in in your browser";
                     color: #aab0bd;
                     font-size: 14px;
                     horizontal-alignment: center;
-                }
-                Rectangle {
-                    height: 70px;
-                    background: #101114;
-                    border-radius: 8px;
-                    Text {
-                        text: root.login-code;
-                        color: root.accent-color;
-                        font-size: 34px;
-                        font-weight: 700;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-                AccentButton {
-                    text: root.copy-button-text;
-                    enabled: root.login-code != "";
-                    min-height: 42px;
-                    fill: root.accent-color;
-                    clicked => { root.copy-login-code(); }
                 }
                 AccentButton {
                     text: "Cancel";
