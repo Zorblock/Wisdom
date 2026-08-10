@@ -1,0 +1,13 @@
+{
+  "name": "wisdom-launcher",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Development commands for the Wisdom Rust + Slint launcher",
+  "scripts": {
+    "dev": "cargo run",
+    "start": "cargo run",
+    "check": "cargo check",
+    "build": "cargo build --release",
+    "setup": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-installer.ps1"
+  }
+}

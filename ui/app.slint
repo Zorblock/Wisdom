@@ -1,0 +1,123 @@
+import { ComboBox, HorizontalBox, VerticalBox } from "std-widgets.slint";
+
+component AccentButton inherits Rectangle {
+    in property <string> text;
+    in property <color> fill: #6ea8fe;
+    in property <bool> enabled: true;
+    in property <length> label-size: 14px;
+    in property <int> label-weight: 600;
+    callback clicked();
+    border-radius: 8px;
+    background: enabled ? fill : #30333a;
+    opacity: enabled ? 1 : 0.55;
+    Text {
+        text: root.text;
+        color: #ffffff;
+        font-size: root.label-size;
+        font-weight: root.label-weight;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component AppWindow inherits Window {
+    in property <[string]> versions;
+    in property <int> selected-version-index;
+    in property <string> selected-version;
+    in property <string> account-name;
+    in property <string> status-text;
+    in property <bool> busy;
+    in property <color> accent-color: #6ea8fe;
+    callback start-game();
+    callback select-version(int);
+    callback login();
+
+    title: "Wisdom";
+    preferred-width: 960px;
+    preferred-height: 620px;
+    background: #101114;
+
+    VerticalBox {
+        padding: 28px;
+        spacing: 0px;
+
+        HorizontalBox {
+            height: 44px;
+            Text {
+                text: "WISDOM";
+                color: #f4f6fb;
+                font-size: 20px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            AccentButton {
+                text: root.account-name == "" ? "Mit Microsoft anmelden" : root.account-name;
+                enabled: !root.busy;
+                min-width: 210px;
+                min-height: 38px;
+                fill: root.account-name == "" ? root.accent-color : #22252d;
+                clicked => { root.login(); }
+            }
+        }
+
+        Rectangle { height: 1px; background: #282b33; }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalBox {
+            Rectangle { horizontal-stretch: 1; }
+            VerticalBox {
+                width: 520px;
+                spacing: 14px;
+                Text {
+                text: root.busy ? "Bitte warten" : (root.account-name == "" ? "Bereit, wenn du es bist" : "Willkommen zurück, " + root.account-name);
+                color: #f4f6fb;
+                font-size: 30px;
+                font-weight: 700;
+                horizontal-alignment: center;
+            }
+                Text {
+                text: root.status-text;
+                color: #aab0bd;
+                font-size: 14px;
+                horizontal-alignment: center;
+                width: 520px;
+                wrap: word-wrap;
+            }
+                Rectangle { height: 12px; }
+                AccentButton {
+                text: root.busy ? "Wird vorbereitet …" : "Start " + root.selected-version;
+                enabled: !root.busy && root.selected-version != "";
+                min-width: 310px;
+                min-height: 58px;
+                label-size: 18px;
+                label-weight: 700;
+                fill: root.accent-color;
+                clicked => { root.start-game(); }
+            }
+                ComboBox {
+                model: root.versions;
+                current-index: root.selected-version-index;
+                enabled: !root.busy;
+                min-width: 310px;
+                min-height: 42px;
+                selected(value) => { root.select-version(self.current-index); }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        Rectangle { vertical-stretch: 1; }
+        Text {
+            text: "Vanilla  •  Windows  •  Deine Daten bleiben auf diesem Gerät";
+            color: #727987;
+            font-size: 12px;
+            horizontal-alignment: center;
+        }
+    }
+}
