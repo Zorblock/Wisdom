@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+pub type ProgressReporter = dyn Fn(f32, String) + Send + Sync;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct VersionManifest { pub latest: LatestVersions, pub versions: Vec<ManifestVersion> }
@@ -18,7 +19,9 @@ pub struct LatestVersions { pub release: String }
 #[derive(Clone, Debug, Deserialize)]
 pub struct ManifestVersion { pub id: String, pub url: String, #[serde(rename = "type")] pub kind: String }
 #[derive(Debug, Deserialize)]
-struct VersionMeta { id: String, #[serde(rename = "mainClass")] main_class: String, downloads: VersionDownloads, #[serde(rename = "assetIndex")] asset_index: Option<Download>, libraries: Vec<Library>, arguments: Option<LaunchArguments>, #[serde(rename = "minecraftArguments")] minecraft_arguments: Option<String> }
+struct VersionMeta { id: String, #[serde(rename = "mainClass")] main_class: String, downloads: VersionDownloads, #[serde(rename = "assetIndex")] asset_index: Option<Download>, #[serde(rename = "javaVersion")] java_version: Option<JavaVersion>, libraries: Vec<Library>, arguments: Option<LaunchArguments>, #[serde(rename = "minecraftArguments")] minecraft_arguments: Option<String> }
+#[derive(Debug, Deserialize)]
+struct JavaVersion { #[serde(rename = "majorVersion")] major_version: u32 }
 #[derive(Debug, Deserialize)]
 struct VersionDownloads { client: Download }
 #[derive(Clone, Debug, Deserialize)]
@@ -53,14 +56,15 @@ pub fn load_versions() -> Result<(VersionManifest, Vec<ManifestVersion>)> {
     Ok((manifest, list))
 }
 
-pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState, report: &(dyn Fn(String) + Send + Sync)) -> Result<()> {
+pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState, report: &(dyn Fn(String) + Send + Sync), progress: &ProgressReporter) -> Result<()> {
     let client = http()?;
     report(format!("Loading Minecraft {} metadata …", entry.id));
     let meta: VersionMeta = client.get(&entry.url).send()?.error_for_status()?.json()?;
+    let java = crate::runtime::ensure_java(root, meta.java_version.as_ref().map(|version| version.major_version).unwrap_or(8), progress)?;
     let version_dir = root.join("versions").join(&meta.id);
     fs::create_dir_all(&version_dir)?;
     let client_jar = version_dir.join(format!("{}.jar", meta.id));
-    download_file(&client, &meta.downloads.client, &client_jar)?;
+    download_file(&client, &meta.downloads.client, &client_jar, "Minecraft client", progress)?;
 
     report("Downloading libraries and Windows components …".into());
     let mut classpath = vec![client_jar];
@@ -71,13 +75,13 @@ pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState
         let Some(downloads) = &library.downloads else { continue; };
         if let Some(artifact) = &downloads.artifact {
             let path = library_path(root, artifact)?;
-            download_file(&client, artifact, &path)?;
+            download_file(&client, artifact, &path, "Library", progress)?;
             classpath.push(path);
         }
         if let Some(classifier) = native_classifier(library) {
             if let Some(native) = downloads.classifiers.as_ref().and_then(|values| values.get(&classifier)) {
                 let path = library_path(root, native)?;
-                download_file(&client, native, &path)?;
+                download_file(&client, native, &path, "Windows component", progress)?;
                 extract_native(&path, &natives_dir, library.extract.as_ref())?;
             }
         }
@@ -87,13 +91,15 @@ pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState
     let assets_index_name = if let Some(asset_index) = &meta.asset_index {
         report("Downloading game assets …".into());
         let index_path = assets_root.join("indexes").join(format!("{}.json", asset_index.path.clone().unwrap_or_else(|| asset_index.url.rsplit('/').next().unwrap_or("index.json").to_owned())));
-        download_file(&client, asset_index, &index_path)?;
+        download_file(&client, asset_index, &index_path, "Asset index", progress)?;
         let index: AssetIndex = read_json(&index_path)?;
-        for asset in index.objects.values() {
+        let total_assets = index.objects.len();
+        for (asset_number, asset) in index.objects.values().enumerate() {
             let path = assets_root.join("objects").join(&asset.hash[0..2]).join(&asset.hash);
             if !path.exists() {
                 let download = Download { url: format!("https://resources.download.minecraft.net/{}/{}", &asset.hash[0..2], asset.hash), path: None, sha1: Some(asset.hash.clone()) };
-                download_file(&client, &download, &path)?;
+                let label = format!("Assets {}/{}", asset_number + 1, total_assets);
+                download_file(&client, &download, &path, &label, progress)?;
             }
         }
         meta.asset_index.as_ref().and_then(|d| d.path.clone()).unwrap_or_else(|| index_path.file_stem().unwrap_or_default().to_string_lossy().to_string())
@@ -111,21 +117,33 @@ pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState
     ]);
     let (mut jvm_args, game_args) = build_arguments(&meta, &substitutions)?;
     if !jvm_args.iter().any(|arg| arg == "-cp" || arg == "-classpath") { jvm_args.extend(["-cp".to_owned(), substitutions["${classpath}"].clone()]); }
-    let java = std::env::var_os("JAVA_HOME").map(|home| PathBuf::from(home).join("bin").join("java.exe")).unwrap_or_else(|| PathBuf::from("java"));
     Command::new(java).args(&jvm_args).arg(&meta.main_class).args(&game_args).current_dir(&game_dir).spawn().context("Could not start Java. Install Java 21+ or set JAVA_HOME")?;
     Ok(())
 }
 
-fn download_file(client: &Client, source: &Download, destination: &Path) -> Result<()> {
+fn download_file(client: &Client, source: &Download, destination: &Path, label: &str, progress: &ProgressReporter) -> Result<()> {
     if destination.exists() && source.sha1.as_ref().is_none_or(|hash| sha1_file(destination).is_ok_and(|actual| actual.eq_ignore_ascii_case(hash))) { return Ok(()); }
     fs::create_dir_all(destination.parent().context("Download target has no parent directory")?)?;
-    let bytes = client.get(&source.url).send()?.error_for_status()?.bytes()?;
-    if let Some(expected) = &source.sha1 {
-        let actual = format!("{:x}", Sha1::digest(&bytes));
-        if !actual.eq_ignore_ascii_case(expected) { bail!("Checksum mismatch for {}", source.url); }
-    }
+    let mut response = client.get(&source.url).send()?.error_for_status()?;
+    let total = response.content_length().unwrap_or(0);
     let temporary = destination.with_extension("download");
-    File::create(&temporary)?.write_all(&bytes)?;
+    let mut output = File::create(&temporary)?;
+    let mut hasher = Sha1::new();
+    let mut received = 0u64;
+    let mut buffer = [0u8; 131_072];
+    loop {
+        let count = response.read(&mut buffer)?;
+        if count == 0 { break; }
+        output.write_all(&buffer[..count])?;
+        hasher.update(&buffer[..count]);
+        received += count as u64;
+        let amount = if total == 0 { 0.0 } else { received as f32 / total as f32 };
+        progress(amount, format!("Downloading {label} · {}%", (amount * 100.0) as u32));
+    }
+    if let Some(expected) = &source.sha1 {
+        let actual = format!("{:x}", hasher.finalize());
+        if !actual.eq_ignore_ascii_case(expected) { fs::remove_file(&temporary)?; bail!("Checksum mismatch for {}", source.url); }
+    }
     fs::rename(temporary, destination)?;
     Ok(())
 }

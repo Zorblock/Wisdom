@@ -35,6 +35,8 @@ export component AppWindow inherits Window {
     in property <string> copy-button-text: "Copy code";
     in property <bool> busy;
     in property <bool> show-login-dialog: false;
+    in property <bool> show-progress: false;
+    in property <float> progress-value: 0;
     in property <color> accent-color: #6ea8fe;
     callback start-game();
     callback select-version(int);
@@ -131,6 +133,22 @@ export component AppWindow inherits Window {
                 width: 520px;
                 wrap: word-wrap;
             }
+                if root.show-progress: HorizontalBox {
+                    Rectangle { horizontal-stretch: 1; }
+                    Rectangle {
+                        width: 310px;
+                        height: 7px;
+                        background: #282b33;
+                        border-radius: 4px;
+                        Rectangle {
+                            width: parent.width * root.progress-value;
+                            height: parent.height;
+                            background: root.accent-color;
+                            border-radius: 4px;
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
                 Rectangle { height: 12px; }
                 AccentButton {
                 text: root.busy ? "Preparing …" : "Start " + root.selected-version;

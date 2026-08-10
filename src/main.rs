@@ -1,6 +1,7 @@
 mod auth;
 mod minecraft;
 mod profile;
+mod runtime;
 mod storage;
 
 use anyhow::Result;
@@ -19,6 +20,7 @@ slint::include_modules!();
 const MICROSOFT_CLIENT_ID: &str = "6f216a95-c659-4c83-818b-a4d2c0a6e73f";
 type Reporter = Arc<dyn Fn(String) + Send + Sync>;
 type CodePresenter = Arc<dyn Fn(String) + Send + Sync>;
+type DownloadProgress = Arc<dyn Fn(f32, String) + Send + Sync>;
 
 fn main() -> Result<()> {
     let data_dir = storage::user_data_dir()?;
@@ -33,11 +35,12 @@ fn main() -> Result<()> {
     let selected = Arc::new(Mutex::new(String::new()));
     let active_login = Arc::new(Mutex::new(None::<Arc<AtomicBool>>));
     let reporter = status_reporter(window.as_weak());
+    let progress = progress_reporter(window.as_weak());
     load_version_list(&window, &versions, &selected);
     bind_version_selection(&window, &versions, &selected);
     bind_login(&window, &data_dir, &active_login, &reporter);
     bind_copy_and_cancel(&window, &active_login);
-    bind_game_start(&window, &data_dir, &versions, &selected, &reporter);
+    bind_game_start(&window, &data_dir, &versions, &selected, &reporter, &progress);
 
     window.run()?;
     Ok(())
@@ -141,27 +144,34 @@ fn bind_copy_and_cancel(window: &AppWindow, active_login: &Arc<Mutex<Option<Arc<
     });
 }
 
-fn bind_game_start(window: &AppWindow, data_dir: &std::path::Path, versions: &Arc<Mutex<Vec<ManifestVersion>>>, selected: &Arc<Mutex<String>>, reporter: &Reporter) {
+fn bind_game_start(window: &AppWindow, data_dir: &std::path::Path, versions: &Arc<Mutex<Vec<ManifestVersion>>>, selected: &Arc<Mutex<String>>, reporter: &Reporter, progress: &DownloadProgress) {
     let weak = window.as_weak();
     let data_dir = data_dir.to_owned();
     let versions = Arc::clone(versions);
     let selected = Arc::clone(selected);
     let reporter = Arc::clone(reporter);
+    let progress = Arc::clone(progress);
     window.on_start_game(move || {
         let version_id = selected.lock().map(|value| value.clone()).unwrap_or_default();
         let version = versions.lock().ok().and_then(|items| items.iter().find(|item| item.id == version_id).cloned());
         let Some(version) = version else { return; };
-        if let Some(ui) = weak.upgrade() { ui.set_busy(true); }
+        if let Some(ui) = weak.upgrade() {
+            ui.set_busy(true);
+            ui.set_show_progress(true);
+            ui.set_progress_value(0.0);
+        }
         let weak_done = weak.clone();
         let root = data_dir.clone();
         let report = Arc::clone(&reporter);
+        let progress = Arc::clone(&progress);
         thread::spawn(move || {
             let outcome = (|| -> Result<()> {
                 let auth = auth::ensure_session(MICROSOFT_CLIENT_ID)?;
-                minecraft::install_and_launch(&root, &version, &auth, &*report)
+                minecraft::install_and_launch(&root, &version, &auth, &*report, &*progress)
             })();
             let _ = slint::invoke_from_event_loop(move || if let Some(ui) = weak_done.upgrade() {
                 ui.set_busy(false);
+                ui.set_show_progress(false);
                 match outcome { Ok(()) => ui.set_status_text("Minecraft started.".into()), Err(error) => ui.set_status_text(format!("Could not start: {error:#}").into()) }
             });
         });
@@ -172,6 +182,16 @@ fn status_reporter(weak: slint::Weak<AppWindow>) -> Reporter {
     Arc::new(move |message| {
         let weak = weak.clone();
         let _ = slint::invoke_from_event_loop(move || if let Some(ui) = weak.upgrade() { ui.set_status_text(message.into()); });
+    })
+}
+
+fn progress_reporter(weak: slint::Weak<AppWindow>) -> DownloadProgress {
+    Arc::new(move |value, message| {
+        let weak = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || if let Some(ui) = weak.upgrade() {
+            ui.set_progress_value(value.clamp(0.0, 1.0));
+            ui.set_status_text(message.into());
+        });
     })
 }
 

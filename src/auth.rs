@@ -41,7 +41,8 @@ pub fn login(
     report("Browser opened. Waiting for sign-in …".into());
     let _ = open::that(&device.verification_uri);
     let token = poll_device_code(&client, client_id, &device, cancelled)?;
-    let auth = minecraft_authenticate(&client, &token.access_token, &token.refresh_token)?;
+    report("Checking Xbox Live account …".into());
+    let auth = minecraft_authenticate(&client, &token.access_token, &token.refresh_token, report)?;
     save_auth(&auth)?;
     Ok(auth)
 }
@@ -85,26 +86,41 @@ fn refresh_microsoft_session(client_id: &str, auth: &AuthState) -> Result<AuthSt
     let token: OAuthToken = client.post("https://login.microsoftonline.com/consumers/oauth2/v2.0/token")
         .form(&[("client_id", client_id), ("grant_type", "refresh_token"), ("refresh_token", &auth.microsoft_refresh_token), ("scope", "XboxLive.signin offline_access")])
         .send()?.error_for_status()?.json()?;
-    minecraft_authenticate(&client, &token.access_token, &token.refresh_token)
+    minecraft_authenticate(&client, &token.access_token, &token.refresh_token, &|_| {})
 }
 
-fn minecraft_authenticate(client: &Client, microsoft_token: &str, refresh_token: &str) -> Result<AuthState> {
-    let xbl: XboxResponse = post_json(client, "https://user.auth.xboxlive.com/user/authenticate", json!({
+fn minecraft_authenticate(client: &Client, microsoft_token: &str, refresh_token: &str, report: &(dyn Fn(String) + Send + Sync)) -> Result<AuthState> {
+    let xbl: XboxResponse = post_json(client, "Xbox Live", "https://user.auth.xboxlive.com/user/authenticate", json!({
         "Properties": {"AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com", "RpsTicket": format!("d={microsoft_token}")}, "RelyingParty": "http://auth.xboxlive.com", "TokenType": "JWT"
     }))?;
-    let xsts: XboxResponse = post_json(client, "https://xsts.auth.xboxlive.com/xsts/authorize", json!({
+    report("Checking Xbox permissions …".into());
+    let xsts: XboxResponse = post_json(client, "Xbox permissions", "https://xsts.auth.xboxlive.com/xsts/authorize", json!({
         "Properties": {"SandboxId": "RETAIL", "UserTokens": [xbl.token]}, "RelyingParty": "rp://api.minecraftservices.com/", "TokenType": "JWT"
     }))?;
     let uhs = xsts.display_claims.xui.first().context("Xbox account has no user identifier")?.uhs.clone();
-    let minecraft: MinecraftLogin = post_json(client, "https://api.minecraftservices.com/authentication/login_with_xbox", json!({"identityToken": format!("XBL3.0 x={uhs};{}", xsts.token)}))?;
+    report("Signing into Minecraft …".into());
+    let minecraft: MinecraftLogin = post_json(client, "Minecraft", "https://api.minecraftservices.com/authentication/login_with_xbox", json!({"identityToken": format!("XBL3.0 x={uhs};{}", xsts.token)}))?;
     let entitlement: Value = client.get("https://api.minecraftservices.com/entitlements/mcstore").header(AUTHORIZATION, format!("Bearer {}", minecraft.access_token)).send()?.error_for_status()?.json()?;
     if entitlement["items"].as_array().is_none_or(|items| items.is_empty()) { bail!("This Microsoft account does not own Minecraft: Java Edition") }
     let profile: MinecraftProfile = client.get("https://api.minecraftservices.com/minecraft/profile").header(AUTHORIZATION, format!("Bearer {}", minecraft.access_token)).send()?.error_for_status()?.json()?;
     Ok(AuthState { minecraft_access_token: minecraft.access_token, microsoft_refresh_token: refresh_token.to_owned(), expires_at: Utc::now() + Duration::seconds(minecraft.expires_in), player_name: profile.name, player_uuid: profile.id, skin_url: profile.skins.first().map(|skin| skin.url.clone()) })
 }
 
-fn post_json<T: for<'a> Deserialize<'a>>(client: &Client, url: &str, body: Value) -> Result<T> {
+fn post_json<T: for<'a> Deserialize<'a>>(client: &Client, service: &str, url: &str, body: Value) -> Result<T> {
     let response = client.post(url).json(&body).send()?;
-    if !response.status().is_success() { bail!("Service returned {}", response.status()); }
+    if !response.status().is_success() {
+        let status = response.status();
+        let error: Value = response.json().unwrap_or_default();
+        if service == "Xbox permissions" {
+            match error["XErr"].as_i64() {
+                Some(2148916233) => bail!("Xbox profile required. Sign in at xbox.com once and create a gamertag."),
+                Some(2148916238) => bail!("Xbox family settings are blocking this account."),
+                Some(2148916235) => bail!("This Xbox account is not available in your country."),
+                _ => {}
+            }
+        }
+        let detail = error["Message"].as_str().or_else(|| error["errorMessage"].as_str()).unwrap_or("No additional details");
+        bail!("{service} returned {status}: {detail}");
+    }
     Ok(response.json()?)
 }
