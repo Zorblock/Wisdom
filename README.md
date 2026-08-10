@@ -16,14 +16,10 @@ npm run setup     # build and create installer\output\Wisdom-Setup.exe
 ## Microsoft login
 
 Microsoft sign-in uses the OAuth device-code flow and obtains Xbox Live, XSTS and Minecraft
-access tokens. Create an Azure app registration configured for public-client/device-code login,
-then enter its **Application (client) ID** in:
-
-`C:\Users\Jonas\AppData\Roaming\zorblock\userData\Wisdom\config.json`
-
-The launcher creates this file on first start. Never place a client secret in it: desktop public
-clients must not have one. The refresh token and Minecraft session are protected in the Windows
-Credential Manager; they are never written as clear text into the launcher folder.
+access tokens. Wisdom's public Microsoft client ID is part of the program, so users do not need
+to edit a configuration file. Never add a client secret: desktop public clients must not have one.
+The refresh token and Minecraft session are protected in the Windows Credential Manager; they are
+never written as clear text into the launcher folder.
 
 ## Current foundation
 

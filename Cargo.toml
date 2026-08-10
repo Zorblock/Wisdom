@@ -6,6 +6,7 @@ description = "A clean Windows Minecraft launcher"
 
 [dependencies]
 anyhow = "1.0"
+copypasta = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 keyring = { version = "3.6", features = ["windows-native"] }
 open = "5.3"

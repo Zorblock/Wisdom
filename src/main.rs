@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration, Utc};
+use copypasta::{ClipboardContext, ClipboardProvider};
 use reqwest::blocking::Client;
 use reqwest::header::AUTHORIZATION;
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration as StdDuration;
 use winreg::RegKey;
@@ -21,6 +23,9 @@ slint::include_modules!();
 
 const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const USER_AGENT_VALUE: &str = "WisdomLauncher/0.1 (Windows; Rust)";
+// Public OAuth client identifier for Wisdom. This is intentionally embedded: desktop apps
+// cannot keep a client secret, and Microsoft client IDs are not secrets.
+const MICROSOFT_CLIENT_ID: &str = "6f216a95-c659-4c83-818b-a4d2c0a6e73f";
 
 #[derive(Clone, Debug, Deserialize)]
 struct VersionManifest {
@@ -129,17 +134,6 @@ struct AssetObject {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Config {
-    microsoft_client_id: String,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self { microsoft_client_id: String::new() }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct AuthState {
     minecraft_access_token: String,
     microsoft_refresh_token: String,
@@ -153,7 +147,6 @@ struct DeviceCode {
     device_code: String,
     user_code: String,
     verification_uri: String,
-    message: String,
     interval: Option<u64>,
 }
 
@@ -194,11 +187,11 @@ struct MinecraftProfile {
 }
 
 type StatusReporter = Arc<dyn Fn(String) + Send + Sync>;
+type DeviceCodePresenter = Arc<dyn Fn(String) + Send + Sync>;
 
 fn main() -> Result<()> {
     let data_dir = user_data_dir()?;
     prepare_storage(&data_dir)?;
-    let config = load_config(&data_dir)?;
     let window = AppWindow::new()?;
     window.set_accent_color(accent_color());
     window.set_status_text("Versionen werden geladen …".into());
@@ -206,6 +199,7 @@ fn main() -> Result<()> {
 
     let versions = Arc::new(Mutex::new(Vec::<ManifestVersion>::new()));
     let selected = Arc::new(Mutex::new(String::new()));
+    let active_login = Arc::new(Mutex::new(None::<Arc<AtomicBool>>));
     let reporter = status_reporter(window.as_weak());
 
     {
@@ -252,39 +246,80 @@ fn main() -> Result<()> {
         }
     });
 
-    let microsoft_client_id = config.microsoft_client_id.clone();
+    let microsoft_client_id = MICROSOFT_CLIENT_ID.to_owned();
     window.on_login({
         let weak = window.as_weak();
         let data_dir = data_dir.clone();
         let reporter = Arc::clone(&reporter);
         let client_id = microsoft_client_id.clone();
+        let active_login = Arc::clone(&active_login);
         move || {
-            if client_id.trim().is_empty() {
-                if let Some(ui) = weak.upgrade() {
-                    ui.set_status_text("Bitte trage zuerst deine Azure Client-ID in userData\\Wisdom\\config.json ein.".into());
-                }
-                return;
+            if let Some(ui) = weak.upgrade() {
+                ui.set_busy(true);
+                ui.set_copy_button_text("Code kopieren".into());
             }
-            if let Some(ui) = weak.upgrade() { ui.set_busy(true); }
+            let cancelled = Arc::new(AtomicBool::new(false));
+            if let Ok(mut active) = active_login.lock() { *active = Some(Arc::clone(&cancelled)); }
             let weak_done = weak.clone();
+            let weak_code = weak.clone();
             let client_id = client_id.clone();
             let login_data_dir = data_dir.clone();
             let report = Arc::clone(&reporter);
+            let active_login = Arc::clone(&active_login);
+            let present_code: DeviceCodePresenter = Arc::new(move |code| {
+                let weak_code = weak_code.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = weak_code.upgrade() {
+                        ui.set_login_code(code.into());
+                        ui.set_show_login_dialog(true);
+                    }
+                });
+            });
             thread::spawn(move || {
-                let outcome = microsoft_login(&client_id, &login_data_dir, &report);
+                let outcome = microsoft_login(&client_id, &login_data_dir, &report, &present_code, &cancelled);
+                if let Ok(mut active) = active_login.lock() { *active = None; }
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = weak_done.upgrade() {
                         ui.set_busy(false);
+                        ui.set_show_login_dialog(false);
+                        ui.set_login_code("".into());
                         match outcome {
                             Ok(auth) => {
                                 ui.set_account_name(auth.player_name.into());
                                 ui.set_status_text("Microsoft-Konto bestätigt. Du kannst jetzt starten.".into());
                             }
+                            Err(_error) if cancelled.load(Ordering::Relaxed) => ui.set_status_text("Anmeldung abgebrochen.".into()),
                             Err(error) => ui.set_status_text(format!("Anmeldung fehlgeschlagen: {error:#}").into()),
                         }
                     }
                 });
             });
+        }
+    });
+
+    window.on_copy_login_code({
+        let weak = window.as_weak();
+        move || {
+            let Some(ui) = weak.upgrade() else { return; };
+            let code = ui.get_login_code().to_string();
+            if !code.is_empty() && ClipboardContext::new().and_then(|mut clipboard| clipboard.set_contents(code)).is_ok() {
+                ui.set_copy_button_text("Kopiert ✓".into());
+            }
+        }
+    });
+
+    window.on_cancel_login({
+        let active_login = Arc::clone(&active_login);
+        let weak = window.as_weak();
+        move || {
+            if let Some(cancelled) = active_login.lock().ok().and_then(|active| active.clone()) {
+                cancelled.store(true, Ordering::Relaxed);
+            }
+            if let Some(ui) = weak.upgrade() {
+                ui.set_show_login_dialog(false);
+                ui.set_login_code("".into());
+                ui.set_status_text("Anmeldung wird abgebrochen …".into());
+            }
         }
     });
 
@@ -335,12 +370,9 @@ fn prepare_storage(root: &Path) -> Result<()> {
     for folder in ["cache", "versions", "libraries", "assets/objects", "assets/indexes", "game", "natives"] {
         fs::create_dir_all(root.join(folder))?;
     }
-    let path = root.join("config.json");
-    if !path.exists() { write_json(&path, &Config::default())?; }
     Ok(())
 }
 
-fn load_config(root: &Path) -> Result<Config> { read_json(&root.join("config.json")) }
 fn credential_entry() -> Result<keyring::Entry> {
     Ok(keyring::Entry::new("Wisdom Minecraft Launcher", "minecraft-session")?)
 }
@@ -357,13 +389,6 @@ fn save_auth(_root: &Path, auth: &AuthState) -> Result<()> {
 
 fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {
     serde_json::from_reader(File::open(path).with_context(|| format!("{} öffnen", path.display()))?).with_context(|| format!("{} lesen", path.display()))
-}
-
-fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let temp = path.with_extension("tmp");
-    serde_json::to_writer_pretty(File::create(&temp)?, value)?;
-    fs::rename(temp, path)?;
-    Ok(())
 }
 
 fn http() -> Result<Client> {
@@ -388,24 +413,28 @@ fn status_reporter(weak: slint::Weak<AppWindow>) -> StatusReporter {
     })
 }
 
-fn microsoft_login(client_id: &str, root: &Path, report: &StatusReporter) -> Result<AuthState> {
+fn microsoft_login(client_id: &str, root: &Path, report: &StatusReporter, present_code: &DeviceCodePresenter, cancelled: &AtomicBool) -> Result<AuthState> {
     let client = http()?;
     report("Microsoft-Anmeldung wird geöffnet …".into());
     let device: DeviceCode = client.post("https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode")
         .form(&[("client_id", client_id), ("scope", "XboxLive.signin offline_access")])
         .send()?.error_for_status()?.json()?;
-    report(format!("{} — Code: {}", device.message, device.user_code));
+    present_code(device.user_code.clone());
+    report("Browser geöffnet. Anmeldung läuft …".into());
     let _ = open::that(&device.verification_uri);
-    let token = poll_device_code(&client, client_id, &device)?;
+    let token = poll_device_code(&client, client_id, &device, cancelled)?;
     let auth = minecraft_authenticate(&client, &token.access_token, &token.refresh_token)?;
     save_auth(root, &auth)?;
     Ok(auth)
 }
 
-fn poll_device_code(client: &Client, client_id: &str, device: &DeviceCode) -> Result<OAuthToken> {
+fn poll_device_code(client: &Client, client_id: &str, device: &DeviceCode, cancelled: &AtomicBool) -> Result<OAuthToken> {
     let interval = device.interval.unwrap_or(5).max(2);
     for _ in 0..180 {
-        thread::sleep(StdDuration::from_secs(interval));
+        for _ in 0..(interval * 5) {
+            if cancelled.load(Ordering::Relaxed) { bail!("Anmeldung abgebrochen") }
+            thread::sleep(StdDuration::from_millis(200));
+        }
         let response = client.post("https://login.microsoftonline.com/consumers/oauth2/v2.0/token")
             .form(&[("client_id", client_id), ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"), ("device_code", &device.device_code)])
             .send()?;
