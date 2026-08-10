@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 
-const REDIRECT_URI: &str = "http://localhost:3160/auth";
+const REDIRECT_URI: &str = "http://localhost";
 
 #[derive(Debug, Deserialize)]
 struct OAuthToken { access_token: String, refresh_token: String }
@@ -32,7 +32,7 @@ struct MinecraftProfile { id: String, name: String, #[serde(default)] skins: Vec
 struct MinecraftSkin { url: String }
 
 pub fn login(client_id: &str, report: &(dyn Fn(String) + Send + Sync), cancelled: &AtomicBool) -> Result<AuthState> {
-    let listener = TcpListener::bind("127.0.0.1:3160").context("Could not open the local sign-in port. Close another launcher and retry")?;
+    let listener = TcpListener::bind("127.0.0.1:80").context("Could not open the local sign-in port. Close another launcher and retry")?;
     listener.set_nonblocking(true)?;
     let verifier = random_token(48);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
