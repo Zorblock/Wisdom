@@ -8,3 +8,4 @@
 *.exe
 .tools
 /AGENTS.md
+.repos

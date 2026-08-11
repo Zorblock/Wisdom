@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.3.1",
-    "@tauri-apps/api": "^2.0.0"
+    "@tauri-apps/api": "^2.0.0",
+    "ansi_up": "^6.0.6"
   }
 }

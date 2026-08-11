@@ -1,5 +1,6 @@
 import "./style.css";
 import "@fortawesome/fontawesome-free/css/all.min.css";
+import { AnsiUp } from "ansi_up";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -9,6 +10,9 @@ const isConsoleView = viewParams.get("console") === "1";
 const customSelectOptionSets = new Map();
 const SELECT_ROW_HEIGHT = 34;
 const SELECT_OVERSCAN = 5;
+const ansiUp = new AnsiUp();
+ansiUp.escape_html = true;
+ansiUp.url_allowlist = {};
 
 const state = {
   data: null,
@@ -1082,7 +1086,54 @@ function updateStatusDom() {
 }
 
 function cleanConsoleMessage(value) {
-  return String(value || "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+  return String(value || "")
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001a\u001c-\u001f\u007f]/g, "");
+}
+
+function appendConsoleToken(parent, value, className = "") {
+  const token = document.createElement("span");
+  if (className) token.className = className;
+  token.textContent = value;
+  parent.append(token);
+}
+
+function appendHighlightedConsoleText(parent, value) {
+  const pattern = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b[a-z0-9_.-]+:[a-z0-9_./-]+\b|\b(?:[a-z_$][\w$]*\.){2,}[A-Z_$][\w$]*(?:\.[\w$]+)*\b|\b(?:true|false|null)\b|\b(?:0x[\da-f]+|\d+(?:\.\d+)?(?:x\d+){1,3}|\d+(?:\.\d+)?(?:ms|MB|GB|KiB|MiB|%)?)\b)/g;
+  let offset = 0;
+  for (const match of value.matchAll(pattern)) {
+    if (match.index > offset) appendConsoleToken(parent, value.slice(offset, match.index));
+    const token = match[0];
+    let kind = "number";
+    if (token.startsWith('"') || token.startsWith("'")) kind = "string";
+    else if (/^(true|false|null)$/i.test(token)) kind = "keyword";
+    else if (token.includes(":") && !/^\d/.test(token)) kind = "resource";
+    else if (/^(?:[a-z_$][\w$]*\.){2,}[A-Z_$]/.test(token)) kind = "class";
+    appendConsoleToken(parent, token, `console-token ${kind}`);
+    offset = match.index + token.length;
+  }
+  if (offset < value.length) appendConsoleToken(parent, value.slice(offset));
+}
+
+function renderConsoleMessage(parent, rawValue, plainValue) {
+  const hasAnsi = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\])/.test(rawValue);
+  if (hasAnsi) {
+    parent.classList.add("ansi-content");
+    parent.innerHTML = ansiUp.ansi_to_html(rawValue);
+    return;
+  }
+  const prefix = /^\[([^/\]]+)\/(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\]\s*/i.exec(plainValue);
+  if (prefix) {
+    appendConsoleToken(parent, "[", "console-log-bracket");
+    appendConsoleToken(parent, prefix[1], "console-log-thread");
+    appendConsoleToken(parent, "/", "console-log-bracket");
+    appendConsoleToken(parent, prefix[2], `console-log-level ${prefix[2].toLowerCase()}`);
+    appendConsoleToken(parent, "] ", "console-log-bracket");
+    appendHighlightedConsoleText(parent, plainValue.slice(prefix[0].length));
+  } else {
+    appendHighlightedConsoleText(parent, plainValue);
+  }
 }
 
 function consoleLineKind(line) {
@@ -1139,7 +1190,8 @@ async function initConsole() {
     [...lines].sort((left, right) => left.sequence - right.sequence).forEach((line) => {
       if (!line || line.instanceId !== instanceId || seen.has(line.sequence)) return;
       seen.add(line.sequence);
-      const normalized = { ...line, message: cleanConsoleMessage(line.message) };
+      const rawMessage = String(line.message || "");
+      const normalized = { ...line, rawMessage, message: cleanConsoleMessage(rawMessage) };
       renderedLines.push(normalized);
       const element = document.createElement("div");
       element.className = `console-line ${consoleLineKind(normalized)}`;
@@ -1147,7 +1199,7 @@ async function initConsole() {
       const time = document.createElement("time");
       time.textContent = normalized.timestamp;
       const message = document.createElement("span");
-      message.textContent = normalized.message;
+      renderConsoleMessage(message, normalized.rawMessage, normalized.message);
       element.append(time, message);
       fragment.append(element);
     });

@@ -360,6 +360,50 @@ fn store_and_emit_console_line(
     let _ = app.emit_to(label, "minecraft-console-line", line);
 }
 
+fn log4j_attribute<'a>(event: &'a str, name: &str) -> Option<&'a str> {
+    let marker = format!(r#"{name}=""#);
+    let value = event.split_once(&marker)?.1;
+    value.split_once('"').map(|(value, _)| value)
+}
+
+fn log4j_cdata(event: &str, element: &str) -> Option<String> {
+    let marker = format!("<log4j:{element}");
+    let value = event.split_once(&marker)?.1;
+    let value = value.split_once("<![CDATA[")?.1;
+    value
+        .split_once("]]>")
+        .map(|(value, _)| value.trim().to_owned())
+}
+
+fn format_log4j_event(event: &str) -> Option<String> {
+    if !event.contains("<log4j:Event") {
+        return None;
+    }
+    let level = log4j_attribute(event, "level").unwrap_or("INFO");
+    let thread = log4j_attribute(event, "thread").unwrap_or("Minecraft");
+    let message = log4j_cdata(event, "Message").unwrap_or_default();
+    let throwable = log4j_cdata(event, "Throwable").unwrap_or_default();
+    let mut formatted = format!("[{thread}/{level}] {message}");
+    if !throwable.is_empty() {
+        formatted.push('\n');
+        formatted.push_str(&throwable);
+    }
+    Some(formatted.trim_end().to_owned())
+}
+
+fn is_log4j_markup(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with("<?xml")
+        || value.starts_with("<log4j:Events")
+        || value.starts_with("</log4j:Events")
+        || value.starts_with("<log4j:Event")
+        || value.starts_with("</log4j:Event")
+        || value.starts_with("<log4j:Message")
+        || value.starts_with("</log4j:Message")
+        || value.starts_with("<log4j:Throwable")
+        || value.starts_with("</log4j:Throwable")
+}
+
 fn spawn_console_reader<R: Read + Send + 'static>(
     reader: R,
     app: AppHandle,
@@ -372,19 +416,61 @@ fn spawn_console_reader<R: Read + Send + 'static>(
     std::thread::spawn(move || {
         let mut reader = BufReader::new(reader);
         let mut bytes = Vec::new();
+        let mut log4j_event = String::new();
         loop {
             bytes.clear();
             match reader.read_until(b'\n', &mut bytes) {
                 Ok(0) | Err(_) => break,
-                Ok(_) => store_and_emit_console_line(
+                Ok(_) => {
+                    let line = String::from_utf8_lossy(&bytes);
+                    if log4j_event.is_empty() {
+                        if let Some(start) = line.find("<log4j:Event") {
+                            log4j_event.push_str(&line[start..]);
+                        } else if !is_log4j_markup(&line) {
+                            store_and_emit_console_line(
+                                &app,
+                                &label,
+                                &logs,
+                                &sequence,
+                                &instance_id,
+                                stream,
+                                line.into_owned(),
+                            );
+                        }
+                    } else {
+                        log4j_event.push_str(&line);
+                    }
+
+                    if log4j_event.contains("</log4j:Event>") {
+                        if let Some(message) = format_log4j_event(&log4j_event) {
+                            store_and_emit_console_line(
+                                &app,
+                                &label,
+                                &logs,
+                                &sequence,
+                                &instance_id,
+                                stream,
+                                message,
+                            );
+                        }
+                        log4j_event.clear();
+                    } else if log4j_event.len() > 1_048_576 {
+                        log4j_event.clear();
+                    }
+                }
+            }
+        }
+        if !log4j_event.is_empty() {
+            if let Some(message) = format_log4j_event(&log4j_event) {
+                store_and_emit_console_line(
                     &app,
                     &label,
                     &logs,
                     &sequence,
                     &instance_id,
                     stream,
-                    String::from_utf8_lossy(&bytes).into_owned(),
-                ),
+                    message,
+                );
             }
         }
     })

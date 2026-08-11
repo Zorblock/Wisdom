@@ -681,6 +681,19 @@ input[type="range"] { width: 200px; height: 3px; accent-color: var(--accent); }
 .console-line.warning > span { color: #d8b66a; }
 .console-line.error > span { color: #e47b7b; }
 .console-line.system > span { color: var(--accent); }
+.console-log-bracket { color: #555; }
+.console-log-thread { color: #a6a6a6; }
+.console-log-level { font-weight: 650; }
+.console-log-level.trace, .console-log-level.debug { color: #777; }
+.console-log-level.info { color: var(--accent); }
+.console-log-level.warn { color: #d8b66a; }
+.console-log-level.error, .console-log-level.fatal { color: #e47b7b; }
+.console-token.string { color: #9bc58d; }
+.console-token.number { color: #d8a36f; }
+.console-token.keyword { color: #c494dc; }
+.console-token.resource { color: #b79ae8; }
+.console-token.class { color: #7fb6d6; }
+.ansi-content a { color: var(--accent); text-decoration: underline; }
 .console-footer { display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-top: 1px solid var(--line); color: #555; background: #020202; font-size: 8px; }
 .console-context-menu { z-index: 100; }
 
