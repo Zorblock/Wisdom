@@ -4,6 +4,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 const app = document.querySelector("#app");
+const customSelectOptionSets = new Map();
+const SELECT_ROW_HEIGHT = 34;
+const SELECT_OVERSCAN = 5;
 
 const state = {
   data: null,
@@ -12,6 +15,8 @@ const state = {
   page: "library",
   modal: null,
   contextMenu: null,
+  contextTarget: null,
+  contextSelection: "",
   accountMenu: false,
   busy: null,
   status: "Loading launcher...",
@@ -19,18 +24,18 @@ const state = {
   toast: null,
 };
 
+document.addEventListener("contextmenu", openContextMenu);
+
 document.addEventListener("click", (event) => {
-  if (!event.target.closest(".custom-select")) closeCustomSelects();
-  let changed = false;
+  if (!event.target.closest(".custom-select, .version-field")) closeCustomSelects();
   if (state.contextMenu && !event.target.closest(".context-menu")) {
-    state.contextMenu = null;
-    changed = true;
+    dismissContextMenu();
   }
   if (state.accountMenu && !event.target.closest(".sidebar-account")) {
     state.accountMenu = false;
-    changed = true;
+    document.querySelector(".account-popover")?.remove();
+    document.querySelector("#account-trigger")?.setAttribute("aria-expanded", "false");
   }
-  if (changed) render();
 });
 
 document.addEventListener("keydown", (event) => {
@@ -39,9 +44,10 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     closeCustomSelect(openSelect, true);
   } else if (event.key === "Escape" && (state.contextMenu || state.accountMenu)) {
-    state.contextMenu = null;
+    dismissContextMenu();
     state.accountMenu = false;
-    render();
+    document.querySelector(".account-popover")?.remove();
+    document.querySelector("#account-trigger")?.setAttribute("aria-expanded", "false");
   } else if ((event.key === "ArrowDown" || event.key === "ArrowUp") && state.contextMenu) {
     event.preventDefault();
     const actions = [...document.querySelectorAll(".context-action:not(:disabled)")];
@@ -51,7 +57,10 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-window.addEventListener("resize", () => closeCustomSelects());
+window.addEventListener("resize", () => {
+  closeCustomSelects();
+  dismissContextMenu(false);
+});
 
 const icons = {
   library: "fa-solid fa-border-all",
@@ -69,6 +78,10 @@ const icons = {
   spark: "fa-brands fa-microsoft",
   instance: "fa-solid fa-cube",
   user: "fa-solid fa-user",
+  copy: "fa-solid fa-copy",
+  cut: "fa-solid fa-scissors",
+  paste: "fa-solid fa-paste",
+  select: "fa-solid fa-i-cursor",
 };
 
 function icon(name) {
@@ -151,6 +164,7 @@ function versionOptions(selected) {
 function customSelect(id, selected, options, ariaLabel) {
   const current = options.find((option) => option.value === selected) || options[0];
   const searchable = options.length > 12;
+  customSelectOptionSets.set(id, options);
   return `
     <div class="custom-select" data-custom-select>
       <input id="${escapeHtml(id)}" type="hidden" value="${escapeHtml(current?.value || "")}" />
@@ -159,11 +173,8 @@ function customSelect(id, selected, options, ariaLabel) {
       </button>
       <div id="${escapeHtml(id)}-menu" class="select-menu" role="listbox" aria-label="${escapeHtml(ariaLabel)}" hidden>
         ${searchable ? `<div class="select-search-wrap"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><input class="select-search" type="text" placeholder="Search versions" autocomplete="off" spellcheck="false" aria-label="Search versions" /></div>` : ""}
-        <div class="select-options">
-          ${options.map((option) => `
-            <button type="button" class="select-option ${option.value === current?.value ? "selected" : ""}" role="option" aria-selected="${option.value === current?.value}" data-select-value="${escapeHtml(option.value)}" data-select-label="${escapeHtml(option.label)}" data-search="${escapeHtml(option.label.toLowerCase())}">
-              <span>${escapeHtml(option.label)}</span>${option.value === current?.value ? icon("check") : ""}
-            </button>`).join("")}
+        <div class="select-options" tabindex="-1">
+          <div class="select-spacer"><div class="select-window"></div></div>
           <div class="select-empty" hidden>No matching versions</div>
         </div>
       </div>
@@ -171,22 +182,30 @@ function customSelect(id, selected, options, ariaLabel) {
 }
 
 function closeCustomSelect(root, restoreFocus = false) {
-  if (!root?.classList.contains("open")) return;
-  root.classList.remove("open");
+  if (!root || (!root.classList.contains("open") && !root.classList.contains("opening"))) return;
+  root.classList.remove("open", "opening");
   const trigger = root.querySelector(".select-trigger");
   const menu = root.querySelector(".select-menu");
   trigger?.setAttribute("aria-expanded", "false");
   if (menu) {
-    menu.hidden = true;
-    menu.style.removeProperty("left");
-    menu.style.removeProperty("top");
-    menu.style.removeProperty("width");
-    menu.style.removeProperty("max-height");
+    window.clearTimeout(root._selectCloseTimer);
+    menu.classList.add("closing");
+    root._selectCloseTimer = window.setTimeout(() => {
+      if (root.classList.contains("open")) return;
+      menu.hidden = true;
+      menu.classList.remove("closing");
+      menu.style.removeProperty("left");
+      menu.style.removeProperty("top");
+      menu.style.removeProperty("width");
+      menu.style.removeProperty("max-height");
+      delete menu.dataset.placement;
+    }, 130);
   }
   const search = root.querySelector(".select-search");
   if (search) search.value = "";
-  root.querySelectorAll(".select-option").forEach((option) => { option.hidden = false; });
-  root.querySelector(".select-empty")?.setAttribute("hidden", "");
+  root._selectFiltered = root._selectOptions || [];
+  root._selectFocusIndex = Math.max(0, root._selectFiltered.findIndex((option) => option.value === root._selectValue));
+  renderSelectWindow(root);
   if (restoreFocus) trigger?.focus();
 }
 
@@ -201,8 +220,11 @@ function openCustomSelect(root) {
   const menu = root.querySelector(".select-menu");
   if (!trigger || !menu) return;
   closeCustomSelects(root);
-  root.classList.add("open");
+  window.clearTimeout(root._selectCloseTimer);
+  root.classList.add("opening");
+  root.classList.remove("open");
   trigger.setAttribute("aria-expanded", "true");
+  menu.classList.remove("closing");
   menu.hidden = false;
 
   const bounds = trigger.getBoundingClientRect();
@@ -214,26 +236,80 @@ function openCustomSelect(root) {
   menu.style.width = `${bounds.width}px`;
   menu.style.maxHeight = `${available}px`;
   menu.style.top = `${openAbove ? Math.max(8, bounds.top - available - 6) : bounds.bottom + 6}px`;
+  menu.dataset.placement = openAbove ? "top" : "bottom";
+  void menu.offsetWidth;
+  root.classList.remove("opening");
+  root.classList.add("open");
 
   requestAnimationFrame(() => {
     const search = root.querySelector(".select-search");
-    const selected = root.querySelector(".select-option.selected");
-    selected?.scrollIntoView({ block: "nearest" });
-    (search || selected || root.querySelector(".select-option"))?.focus({ preventScroll: true });
+    const options = root.querySelector(".select-options");
+    const selectedIndex = Math.max(0, root._selectFiltered.findIndex((option) => option.value === root._selectValue));
+    root._selectFocusIndex = selectedIndex;
+    if (options && root._selectFiltered.length) {
+      options.scrollTop = Math.max(0, selectedIndex * SELECT_ROW_HEIGHT - (options.clientHeight - SELECT_ROW_HEIGHT) / 2);
+    }
+    renderSelectWindow(root);
+    if (search) search.focus({ preventScroll: true });
+    else focusSelectIndex(root, selectedIndex);
   });
 }
 
-function visibleSelectOptions(root) {
-  return [...root.querySelectorAll(".select-option")].filter((option) => !option.hidden);
+function renderSelectWindow(root) {
+  const viewport = root.querySelector(".select-options");
+  const spacer = root.querySelector(".select-spacer");
+  const windowElement = root.querySelector(".select-window");
+  const empty = root.querySelector(".select-empty");
+  if (!viewport || !spacer || !windowElement || !empty) return;
+
+  const options = root._selectFiltered || [];
+  empty.hidden = options.length !== 0;
+  spacer.hidden = options.length === 0;
+  if (!options.length) {
+    spacer.style.height = "0px";
+    windowElement.replaceChildren();
+    return;
+  }
+
+  const visibleRows = Math.ceil((viewport.clientHeight || 300) / SELECT_ROW_HEIGHT);
+  const start = Math.max(0, Math.floor(viewport.scrollTop / SELECT_ROW_HEIGHT) - SELECT_OVERSCAN);
+  const end = Math.min(options.length, start + visibleRows + SELECT_OVERSCAN * 2);
+  spacer.style.height = `${options.length * SELECT_ROW_HEIGHT}px`;
+  windowElement.style.transform = `translateY(${start * SELECT_ROW_HEIGHT}px)`;
+  windowElement.innerHTML = options.slice(start, end).map((option, offset) => {
+    const index = start + offset;
+    const selected = option.value === root._selectValue;
+    return `
+      <button type="button" class="select-option ${selected ? "selected" : ""}" role="option" aria-selected="${selected}" data-select-index="${index}" data-select-value="${escapeHtml(option.value)}" data-select-label="${escapeHtml(option.label)}">
+        <span>${escapeHtml(option.label)}</span>${selected ? icon("check") : ""}
+      </button>`;
+  }).join("");
+  windowElement.querySelectorAll(".select-option").forEach((option) => {
+    option.addEventListener("click", () => chooseSelectOption(option));
+  });
 }
 
 function moveSelectFocus(root, direction) {
-  const options = visibleSelectOptions(root);
+  const options = root._selectFiltered || [];
   if (!options.length) return;
-  const current = options.indexOf(document.activeElement);
-  const next = current < 0 ? (direction > 0 ? 0 : options.length - 1) : (current + direction + options.length) % options.length;
-  options[next].focus({ preventScroll: true });
-  options[next].scrollIntoView({ block: "nearest" });
+  const activeIndex = Number(document.activeElement?.dataset?.selectIndex);
+  const current = Number.isInteger(activeIndex) ? activeIndex : root._selectFocusIndex;
+  const next = current == null ? (direction > 0 ? 0 : options.length - 1) : (current + direction + options.length) % options.length;
+  focusSelectIndex(root, next);
+}
+
+function focusSelectIndex(root, index) {
+  const options = root._selectFiltered || [];
+  const viewport = root.querySelector(".select-options");
+  if (!viewport || !options.length) return;
+  const next = Math.max(0, Math.min(index, options.length - 1));
+  const top = next * SELECT_ROW_HEIGHT;
+  const bottom = top + SELECT_ROW_HEIGHT;
+  if (top < viewport.scrollTop) viewport.scrollTop = top;
+  else if (bottom > viewport.scrollTop + viewport.clientHeight) viewport.scrollTop = bottom - viewport.clientHeight;
+  root._selectFocusIndex = next;
+  renderSelectWindow(root);
+  root.querySelector(`.select-option[data-select-index="${next}"]`)?.focus({ preventScroll: true });
 }
 
 function chooseSelectOption(option) {
@@ -243,14 +319,8 @@ function chooseSelectOption(option) {
   const value = option.dataset.selectValue;
   const label = option.dataset.selectLabel;
   input.value = value;
+  root._selectValue = value;
   root.querySelector(".select-value").textContent = label;
-  root.querySelectorAll(".select-option").forEach((item) => {
-    const selected = item === option;
-    item.classList.toggle("selected", selected);
-    item.setAttribute("aria-selected", String(selected));
-    item.querySelector(".icon")?.remove();
-    if (selected) item.insertAdjacentHTML("beforeend", icon("check"));
-  });
   closeCustomSelect(root, true);
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }
@@ -258,21 +328,35 @@ function chooseSelectOption(option) {
 function filterSelectOptions(event) {
   const root = event.currentTarget.closest(".custom-select");
   const query = event.currentTarget.value.trim().toLowerCase();
-  let matches = 0;
-  root.querySelectorAll(".select-option").forEach((option) => {
-    const visible = !query || option.dataset.search.includes(query);
-    option.hidden = !visible;
-    if (visible) matches += 1;
-  });
-  root.querySelector(".select-empty").hidden = matches !== 0;
+  root._selectFiltered = query
+    ? root._selectOptions.filter((option) => option.label.toLowerCase().includes(query))
+    : root._selectOptions;
+  root._selectFocusIndex = 0;
+  root.querySelector(".select-options").scrollTop = 0;
+  renderSelectWindow(root);
 }
 
 function bindCustomSelects() {
   document.querySelectorAll(".custom-select").forEach((root) => {
     const trigger = root.querySelector(".select-trigger");
-    trigger.addEventListener("click", () => {
+    const input = root.querySelector('input[type="hidden"]');
+    root._selectOptions = customSelectOptionSets.get(input.id) || [];
+    root._selectFiltered = root._selectOptions;
+    root._selectValue = input.value;
+    root._selectFocusIndex = Math.max(0, root._selectOptions.findIndex((option) => option.value === input.value));
+    renderSelectWindow(root);
+
+    const toggle = () => {
       if (root.classList.contains("open")) closeCustomSelect(root, true);
       else openCustomSelect(root);
+    };
+    trigger.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      toggle();
+    });
+    trigger.addEventListener("click", (event) => {
+      if (event.detail === 0) toggle();
     });
     trigger.addEventListener("keydown", (event) => {
       if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(event.key)) {
@@ -281,19 +365,33 @@ function bindCustomSelects() {
         if (event.key === "ArrowUp") requestAnimationFrame(() => moveSelectFocus(root, -1));
       }
     });
-    root.querySelectorAll(".select-option").forEach((option) => option.addEventListener("click", () => chooseSelectOption(option)));
     root.querySelector(".select-search")?.addEventListener("input", filterSelectOptions);
+    let scrollFrame = null;
+    root.querySelector(".select-options").addEventListener("scroll", () => {
+      if (scrollFrame != null) return;
+      scrollFrame = requestAnimationFrame(() => {
+        scrollFrame = null;
+        renderSelectWindow(root);
+      });
+    }, { passive: true });
     root.querySelector(".select-menu").addEventListener("keydown", (event) => {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
         moveSelectFocus(root, event.key === "ArrowDown" ? 1 : -1);
       } else if (event.key === "Home" || event.key === "End") {
         event.preventDefault();
-        const options = visibleSelectOptions(root);
-        const option = event.key === "Home" ? options[0] : options.at(-1);
-        option?.focus({ preventScroll: true });
-        option?.scrollIntoView({ block: "nearest" });
+        focusSelectIndex(root, event.key === "Home" ? 0 : root._selectFiltered.length - 1);
       }
+    });
+  });
+
+  document.querySelectorAll(".version-field").forEach((field) => {
+    field.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || event.target.closest(".select-trigger, .select-menu")) return;
+      event.preventDefault();
+      const root = field.querySelector(".custom-select");
+      if (root?.classList.contains("open")) closeCustomSelect(root, true);
+      else if (root) openCustomSelect(root);
     });
   });
 }
@@ -352,6 +450,20 @@ function shell(content) {
 
 function renderLibrary() {
   const instance = activeInstance();
+  if (!instance) {
+    return `
+      <header class="topbar">
+        <h1>Library</h1>
+        <button id="new-instance" class="button secondary">${icon("plus")}New instance</button>
+      </header>
+      <div class="content-scroll empty-library-wrap">
+        <section class="empty-library">
+          <span class="empty-library-icon">${icon("instance")}</span>
+          <h2>No instances</h2>
+          <button id="empty-create" class="button primary">${icon("plus")}Create instance</button>
+        </section>
+      </div>`;
+  }
   const selectedVersion = state.selectedVersion || instance.version;
   const account = state.data.account;
   const running = isRunning(instance.id);
@@ -398,19 +510,41 @@ function renderLibrary() {
 
 function renderContextMenu() {
   if (!state.contextMenu) return "";
-  const instance = state.data.instances.find((item) => item.id === state.contextMenu.instanceId);
-  if (!instance) return "";
-  const canDelete = state.data.instances.length > 1;
-  const running = isRunning(instance.id);
+  const position = `left:${state.contextMenu.x}px;top:${state.contextMenu.y}px`;
+  if (state.contextMenu.type === "instance") {
+    const instance = state.data.instances.find((item) => item.id === state.contextMenu.instanceId);
+    if (!instance) return "";
+    const running = isRunning(instance.id);
+    return `
+      <div class="context-menu" role="menu" aria-label="Actions for ${escapeHtml(instance.name)}" style="${position}">
+        <div class="context-title"><span class="instance-symbol">${icon("instance")}</span><span><strong>${escapeHtml(instance.name)}</strong><small>Minecraft ${escapeHtml(instance.version)}</small></span></div>
+        <div class="context-separator"></div>
+        <button class="context-action" role="menuitem" data-context-action="play" ${running ? "disabled" : ""}>${icon(running ? "check" : "play")}<span>${running ? "Already running" : "Play"}</span></button>
+        <button class="context-action" role="menuitem" data-context-action="edit">${icon("edit")}<span>Edit</span></button>
+        <button class="context-action" role="menuitem" data-context-action="folder">${icon("folder")}<span>Open folder</span></button>
+        <div class="context-separator"></div>
+        <button class="context-action danger-action" role="menuitem" data-context-action="delete" ${running ? "disabled" : ""} title="${running ? "A running instance cannot be deleted" : "Delete instance permanently"}">${icon("trash")}<span>${running ? "Currently running" : "Delete instance"}</span></button>
+      </div>`;
+  }
+
+  if (state.contextMenu.type === "text") {
+    const noSelection = !state.contextSelection;
+    return `
+      <div class="context-menu compact-context-menu" role="menu" aria-label="Text actions" style="${position}">
+        <button class="context-action" role="menuitem" data-context-action="cut" ${noSelection ? "disabled" : ""}>${icon("cut")}<span>Cut</span></button>
+        <button class="context-action" role="menuitem" data-context-action="copy" ${noSelection ? "disabled" : ""}>${icon("copy")}<span>Copy</span></button>
+        <button class="context-action" role="menuitem" data-context-action="paste">${icon("paste")}<span>Paste</span></button>
+        <div class="context-separator"></div>
+        <button class="context-action" role="menuitem" data-context-action="select-all">${icon("select")}<span>Select all</span></button>
+      </div>`;
+  }
+
   return `
-    <div class="context-menu" role="menu" aria-label="Actions for ${escapeHtml(instance.name)}" style="left:${state.contextMenu.x}px;top:${state.contextMenu.y}px">
-      <div class="context-title"><span class="instance-symbol">${icon("instance")}</span><span><strong>${escapeHtml(instance.name)}</strong><small>Minecraft ${escapeHtml(instance.version)}</small></span></div>
-      <div class="context-separator"></div>
-      <button class="context-action" role="menuitem" data-context-action="play" ${running ? "disabled" : ""}>${icon(running ? "check" : "play")}<span>${running ? "Already running" : "Play"}</span></button>
-      <button class="context-action" role="menuitem" data-context-action="edit">${icon("edit")}<span>Edit</span></button>
-      <button class="context-action" role="menuitem" data-context-action="folder">${icon("folder")}<span>Open folder</span></button>
-      <div class="context-separator"></div>
-      <button class="context-action danger-action" role="menuitem" data-context-action="delete" ${canDelete && !running ? "" : "disabled"} title="${running ? "A running instance cannot be deleted" : canDelete ? "Delete instance permanently" : "The last instance cannot be deleted"}">${icon("trash")}<span>${running ? "Currently running" : canDelete ? "Delete instance" : "Keep last instance"}</span></button>
+    <div class="context-menu compact-context-menu" role="menu" aria-label="Launcher actions" style="${position}">
+      ${state.contextMenu.type === "selection" ? `<button class="context-action" role="menuitem" data-context-action="copy">${icon("copy")}<span>Copy</span></button><div class="context-separator"></div>` : ""}
+      <button class="context-action" role="menuitem" data-context-action="new-instance" ${state.busy ? "disabled" : ""}>${icon("plus")}<span>New instance</span></button>
+      <button class="context-action" role="menuitem" data-context-action="settings">${icon("settings")}<span>Settings</span></button>
+      <button class="context-action" role="menuitem" data-context-action="data-folder">${icon("folder")}<span>Open data folder</span></button>
     </div>`;
 }
 
@@ -445,6 +579,7 @@ function renderSettings() {
 function renderModal() {
   if (!state.modal) return "";
   const instance = activeInstance();
+  if ((state.modal === "edit" || state.modal === "delete") && !instance) return "";
   if (state.modal === "delete") {
     return `<div class="modal-backdrop"><section class="modal compact" role="dialog" aria-modal="true"><div class="danger-mark">${icon("trash")}</div><h2>Delete instance?</h2><p>“${escapeHtml(instance.name)}” and all worlds stored inside it will be permanently removed.</p><div class="modal-actions"><button data-close-modal class="button secondary">Cancel</button><button id="confirm-delete" class="button danger">Delete permanently</button></div></section></div>`;
   }
@@ -462,7 +597,7 @@ function renderModal() {
             <label id="instance-ram-wrap" class="field ${instance.ramMb ? "" : "disabled"}"><span>Memory <output id="instance-ram-output">${((instance.ramMb || state.data.settings.ramMb) / 1024).toFixed(1)} GB</output></span><input id="instance-ram" type="range" min="1024" max="16384" step="512" value="${instance.ramMb || state.data.settings.ramMb}" ${instance.ramMb ? "" : "disabled"} /></label>
             <details class="advanced"><summary>Advanced launch options</summary><div class="advanced-fields"><label class="field"><span>JVM arguments</span><input id="instance-jvm" value="${escapeHtml(instance.jvmArgs || "")}" placeholder="Use global setting" /></label><label class="field"><span>Game arguments</span><input id="instance-game" value="${escapeHtml(instance.gameArgs || "")}" placeholder="Use global setting" /></label></div></details>
           ` : ""}
-          <div class="modal-footer">${editing && state.data.instances.length > 1 && !isRunning(instance.id) ? `<button id="delete-instance" type="button" class="button text-danger">${icon("trash")}Delete instance</button>` : ""}<span></span><button type="button" data-close-modal class="button secondary">Cancel</button><button type="submit" class="button primary">${editing ? "Save changes" : "Create instance"}</button></div>
+          <div class="modal-footer">${editing && !isRunning(instance.id) ? `<button id="delete-instance" type="button" class="button text-danger">${icon("trash")}Delete instance</button>` : ""}<span></span><button type="button" data-close-modal class="button secondary">Cancel</button><button type="submit" class="button primary">${editing ? "Save changes" : "Create instance"}</button></div>
         </form>
       </section>
     </div>`;
@@ -494,9 +629,9 @@ function bindEvents() {
     state.accountMenu = false;
     render();
   }));
-  document.querySelectorAll("[data-instance]").forEach((element) => element.addEventListener("contextmenu", openContextMenu));
   document.querySelectorAll("[data-context-action]").forEach((button) => button.addEventListener("click", handleContextAction));
   document.querySelector("#new-instance")?.addEventListener("click", () => openModal("create"));
+  document.querySelector("#empty-create")?.addEventListener("click", () => openModal("create"));
   document.querySelector("#sidebar-add")?.addEventListener("click", () => openModal("create"));
   document.querySelector("#edit-instance")?.addEventListener("click", () => openModal("edit"));
   document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", () => openModal(null)));
@@ -508,7 +643,7 @@ function bindEvents() {
   document.querySelector("#signin")?.addEventListener("click", login);
   document.querySelector("#account-trigger")?.addEventListener("click", () => {
     state.accountMenu = !state.accountMenu;
-    state.contextMenu = null;
+    dismissContextMenu(false);
     render();
   });
   document.querySelector("#add-account")?.addEventListener("click", login);
@@ -528,7 +663,7 @@ function bindEvents() {
 
 function openModal(modal) {
   if (state.busy) return;
-  state.contextMenu = null;
+  dismissContextMenu(false);
   state.accountMenu = false;
   state.modal = modal;
   render();
@@ -536,39 +671,165 @@ function openModal(modal) {
 
 function openContextMenu(event) {
   event.preventDefault();
-  if (state.busy || state.modal) return;
-  const instance = state.data.instances.find((item) => item.id === event.currentTarget.dataset.instance);
-  if (!instance) return;
-  const bounds = event.currentTarget.getBoundingClientRect();
-  const menuWidth = 224;
-  const menuHeight = 258;
-  const requestedX = event.clientX || bounds.right - 8;
-  const requestedY = event.clientY || bounds.top + 12;
-  state.activeId = instance.id;
-  state.selectedVersion = instance.version;
+  if (!state.data || event.target.closest(".context-menu")) return;
+  closeCustomSelects();
   state.accountMenu = false;
+  document.querySelector(".account-popover")?.remove();
+  document.querySelector("#account-trigger")?.setAttribute("aria-expanded", "false");
+
+  const instanceElement = !state.modal ? event.target.closest("[data-instance]") : null;
+  const editable = event.target.closest('textarea, [contenteditable="true"], input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="hidden"])');
+  const instance = instanceElement
+    ? state.data.instances.find((item) => item.id === instanceElement.dataset.instance)
+    : null;
+  let type = "global";
+  state.contextTarget = null;
+  state.contextSelection = "";
+
+  if (instance) {
+    type = "instance";
+  } else if (editable) {
+    type = "text";
+    state.contextTarget = editable;
+    if (typeof editable.selectionStart === "number") {
+      state.contextSelection = editable.value.slice(editable.selectionStart, editable.selectionEnd);
+    } else {
+      state.contextSelection = window.getSelection()?.toString() || "";
+    }
+  } else {
+    state.contextSelection = window.getSelection()?.toString().trim() || "";
+    if (state.contextSelection) type = "selection";
+  }
+
   state.contextMenu = {
-    instanceId: instance.id,
-    x: Math.max(8, Math.min(requestedX, window.innerWidth - menuWidth - 8)),
-    y: Math.max(8, Math.min(requestedY, window.innerHeight - menuHeight - 8)),
+    type,
+    instanceId: instance?.id || null,
+    x: event.clientX || 8,
+    y: event.clientY || 8,
   };
-  render();
-  document.querySelector('[data-context-action="play"]')?.focus();
+  mountContextMenu();
 }
 
-function handleContextAction(event) {
+function mountContextMenu() {
+  document.querySelector(".context-menu")?.remove();
+  const host = document.querySelector(".app-shell");
+  if (!host || !state.contextMenu) return;
+  host.insertAdjacentHTML("beforeend", renderContextMenu());
+  const menu = host.querySelector(".context-menu");
+  if (!menu) return;
+  const bounds = menu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(state.contextMenu.x, window.innerWidth - bounds.width - 8));
+  const top = Math.max(8, Math.min(state.contextMenu.y, window.innerHeight - bounds.height - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  menu.querySelectorAll("[data-context-action]").forEach((button) => button.addEventListener("click", handleContextAction));
+  void menu.offsetWidth;
+  menu.classList.add("open");
+}
+
+function dismissContextMenu(animate = true) {
+  const menu = document.querySelector(".context-menu");
+  state.contextMenu = null;
+  state.contextTarget = null;
+  state.contextSelection = "";
+  if (!menu) return;
+  if (!animate) {
+    menu.remove();
+    return;
+  }
+  menu.classList.remove("open");
+  window.setTimeout(() => menu.remove(), 120);
+}
+
+async function writeClipboard(text) {
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const fallback = document.createElement("textarea");
+    fallback.value = text;
+    fallback.setAttribute("readonly", "");
+    fallback.style.position = "fixed";
+    fallback.style.opacity = "0";
+    document.body.append(fallback);
+    fallback.select();
+    document.execCommand("copy");
+    fallback.remove();
+  }
+}
+
+async function handleTextContextAction(action, target, selection) {
+  if (action === "copy") {
+    await writeClipboard(selection);
+    return;
+  }
+  if (action === "select-all") {
+    target?.focus();
+    if (typeof target?.select === "function") target.select();
+    else document.execCommand("selectAll");
+    return;
+  }
+  if (action === "cut") {
+    await writeClipboard(selection);
+    if (typeof target?.setRangeText === "function") {
+      target.setRangeText("", target.selectionStart, target.selectionEnd, "end");
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+    } else {
+      target?.focus();
+      document.execCommand("delete");
+    }
+    return;
+  }
+  if (action === "paste") {
+    try {
+      const text = await navigator.clipboard.readText();
+      target?.focus();
+      if (typeof target?.setRangeText === "function") {
+        target.setRangeText(text, target.selectionStart, target.selectionEnd, "end");
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+      } else {
+        document.execCommand("insertText", false, text);
+      }
+    } catch {
+      target?.focus();
+      document.execCommand("paste");
+    }
+  }
+}
+
+async function handleContextAction(event) {
   const action = event.currentTarget.dataset.contextAction;
+  const menuType = state.contextMenu?.type;
+  const target = state.contextTarget;
+  const selection = state.contextSelection;
+  if (menuType === "text" || (menuType === "selection" && action === "copy")) {
+    dismissContextMenu();
+    await handleTextContextAction(action, target, selection);
+    return;
+  }
+  if (menuType !== "instance") {
+    dismissContextMenu();
+    if (action === "new-instance") openModal("create");
+    else if (action === "settings") {
+      state.page = "settings";
+      state.modal = null;
+      render();
+    } else if (action === "data-folder") {
+      callSimple("open_data_folder", {}, "Data folder opened.");
+    }
+    return;
+  }
+
   const instanceId = state.contextMenu?.instanceId;
   const instance = state.data.instances.find((item) => item.id === instanceId);
   if (!instance) return;
   state.activeId = instance.id;
   state.selectedVersion = instance.version;
-  state.contextMenu = null;
+  dismissContextMenu(false);
   if (action === "edit") {
     state.modal = "edit";
     render();
   } else if (action === "delete") {
-    if (state.data.instances.length <= 1) return;
     state.modal = "delete";
     render();
   } else if (action === "folder") {
@@ -701,14 +962,17 @@ async function saveInstance(event) {
 async function deleteInstance() {
   if (state.busy) return;
   const instance = activeInstance();
+  if (!instance) return;
   if (isRunning(instance.id)) return;
   state.busy = "delete";
   try {
     await invoke("delete_instance", { instanceId: instance.id });
     state.data.instances = state.data.instances.filter((item) => item.id !== instance.id);
-    state.activeId = state.data.instances[0].id;
-    state.selectedVersion = state.data.instances[0].version;
+    const next = state.data.instances[0] || null;
+    state.activeId = next?.id || null;
+    state.selectedVersion = next?.version || null;
     state.modal = null;
+    state.status = next ? "Ready to play." : "No instances.";
     notify("Instance deleted.", "success");
   } catch (error) {
     fail("Could not delete instance", error);
@@ -742,6 +1006,7 @@ async function saveSettings() {
 async function launch() {
   if (state.busy) return;
   const instance = activeInstance();
+  if (!instance) return;
   if (isRunning(instance.id)) return;
   const version = state.selectedVersion || instance.version;
   state.busy = `launch:${instance.id}`;
@@ -835,9 +1100,10 @@ async function init() {
     });
     state.data = await invoke("load_launcher");
     applyAccent(state.data.accentColor);
-    state.activeId = state.data.instances[0].id;
-    state.selectedVersion = state.data.instances[0].version;
-    state.status = "Ready to play.";
+    const initialInstance = state.data.instances[0] || null;
+    state.activeId = initialInstance?.id || null;
+    state.selectedVersion = initialInstance?.version || null;
+    state.status = initialInstance ? "Ready to play." : "No instances.";
     render();
   } catch (error) {
     app.innerHTML = `<div class="fatal"><h1>Wisdom could not start</h1><p>${escapeHtml(cleanError(error))}</p><button id="retry" class="button primary">Try again</button></div>`;

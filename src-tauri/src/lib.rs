@@ -91,7 +91,7 @@ async fn load_launcher(state: State<'_, RuntimeState>) -> Result<LauncherData, S
         storage::prepare_storage(&root)?;
         let (manifest, versions) = minecraft::load_versions(&root)?;
         let latest_version = manifest.latest.release;
-        let instances = instances::load_or_create(&root, &latest_version)?;
+        let instances = instances::load_all(&root)?;
         let (active_account, accounts) = storage::load_accounts(&root)?;
         let versions = versions
             .into_iter()
@@ -159,7 +159,7 @@ async fn create_instance(name: String, version: String) -> Result<instances::Ins
     run_blocking(move || {
         let root = storage::user_data_dir()?;
         storage::prepare_storage(&root)?;
-        let all = instances::load_or_create(&root, &version)?;
+        let all = instances::load_all(&root)?;
         instances::create(&root, &name, &version, &all)
     })
     .await
@@ -204,10 +204,6 @@ async fn delete_instance(
     }
     run_blocking(move || {
         let root = storage::user_data_dir()?;
-        let all = instances::load_or_create(&root, "unknown")?;
-        if all.len() <= 1 {
-            anyhow::bail!("The last instance cannot be deleted");
-        }
         instances::delete(&root, &instance_id)
     })
     .await

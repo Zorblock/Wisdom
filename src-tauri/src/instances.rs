@@ -20,7 +20,7 @@ pub struct Instance {
     pub last_played: Option<DateTime<Utc>>,
 }
 
-pub fn load_or_create(root: &Path, default_version: &str) -> Result<Vec<Instance>> {
+pub fn load_all(root: &Path) -> Result<Vec<Instance>> {
     let directory = root.join("instances");
     fs::create_dir_all(&directory)?;
     let mut instances = Vec::new();
@@ -46,19 +46,6 @@ pub fn load_or_create(root: &Path, default_version: &str) -> Result<Vec<Instance
             .cmp(&left.last_played)
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
     });
-    if instances.is_empty() {
-        let instance = Instance {
-            id: "vanilla".into(),
-            name: "Vanilla".into(),
-            version: default_version.into(),
-            ram_mb: None,
-            jvm_args: None,
-            game_args: None,
-            last_played: None,
-        };
-        save(root, &instance)?;
-        instances.push(instance);
-    }
     Ok(instances)
 }
 
