@@ -24,8 +24,12 @@ never written as clear text into the launcher folder.
 
 ## Current foundation
 
-- Mojang's official version manifest is loaded and release/snapshot versions can be selected.
+- Clean desktop library with editable, isolated instances and per-instance launch settings.
+- Mojang's official version manifest is cached locally; release/snapshot versions can be selected.
 - Starting a version downloads its version metadata, client, libraries, native Windows libraries
-  and game assets to the launcher user-data folder, then invokes Java with the generated classpath.
+  game assets and logging configuration to the launcher user-data folder, then invokes Java with
+  the generated classpath.
 - A valid Microsoft Minecraft account is required to start the game. The required Temurin Java
   runtime is downloaded automatically into the Wisdom user-data folder.
+- Long-running authentication, setup and download work runs outside the UI thread and reports
+  status/progress in the launcher.

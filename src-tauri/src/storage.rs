@@ -27,55 +27,98 @@ struct SessionProfile {
     skin_url: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LauncherSettings {
-    #[serde(default)]
+    #[serde(default, alias = "open_console")]
     pub open_console: bool,
-    #[serde(default = "default_ram_mb")]
+    #[serde(default, alias = "show_snapshots")]
+    pub show_snapshots: bool,
+    #[serde(default = "default_ram_mb", alias = "ram_mb")]
     pub ram_mb: u32,
-    #[serde(default)]
+    #[serde(default, alias = "jvm_args")]
     pub jvm_args: String,
-    #[serde(default)]
+    #[serde(default, alias = "game_args")]
     pub game_args: String,
 }
 
-fn default_ram_mb() -> u32 { 4096 }
+fn default_ram_mb() -> u32 {
+    4096
+}
 
 impl Default for LauncherSettings {
     fn default() -> Self {
-        Self { open_console: false, ram_mb: default_ram_mb(), jvm_args: String::new(), game_args: String::new() }
+        Self {
+            open_console: false,
+            show_snapshots: false,
+            ram_mb: default_ram_mb(),
+            jvm_args: String::new(),
+            game_args: String::new(),
+        }
     }
 }
 
 pub fn user_data_dir() -> Result<PathBuf> {
     let app_data = std::env::var_os("APPDATA").context("APPDATA is not set")?;
-    Ok(PathBuf::from(app_data).join("zorblock").join("userData").join("Wisdom"))
+    Ok(PathBuf::from(app_data)
+        .join("zorblock")
+        .join("userData")
+        .join("Wisdom"))
 }
 
 pub fn prepare_storage(root: &Path) -> Result<()> {
-    for folder in ["cache", "versions", "libraries", "assets/objects", "assets/indexes", "instances", "natives"] {
+    for folder in [
+        "cache",
+        "versions",
+        "libraries",
+        "assets/objects",
+        "assets/indexes",
+        "instances",
+        "natives",
+    ] {
         fs::create_dir_all(root.join(folder))?;
     }
     Ok(())
 }
 
 pub fn load_auth() -> Result<AuthState> {
-    let refresh_token = credential("minecraft-refresh-token")?.get_password().context("no saved Microsoft session")?;
-    let minecraft_access_token = credential("minecraft-access-token")?.get_password().context("no saved Minecraft session")?;
-    let profile: SessionProfile = serde_json::from_str(&credential("minecraft-profile")?.get_password()?)?;
-    Ok(AuthState { minecraft_access_token, microsoft_refresh_token: refresh_token, expires_at: profile.expires_at, player_name: profile.player_name, player_uuid: profile.player_uuid, skin_url: profile.skin_url })
+    let refresh_token = credential("minecraft-refresh-token")?
+        .get_password()
+        .context("no saved Microsoft session")?;
+    let minecraft_access_token = credential("minecraft-access-token")?
+        .get_password()
+        .context("no saved Minecraft session")?;
+    let profile: SessionProfile =
+        serde_json::from_str(&credential("minecraft-profile")?.get_password()?)?;
+    Ok(AuthState {
+        minecraft_access_token,
+        microsoft_refresh_token: refresh_token,
+        expires_at: profile.expires_at,
+        player_name: profile.player_name,
+        player_uuid: profile.player_uuid,
+        skin_url: profile.skin_url,
+    })
 }
 
 pub fn save_auth(auth: &AuthState) -> Result<()> {
     credential("minecraft-refresh-token")?.set_password(&auth.microsoft_refresh_token)?;
     credential("minecraft-access-token")?.set_password(&auth.minecraft_access_token)?;
-    let profile = SessionProfile { expires_at: auth.expires_at, player_name: auth.player_name.clone(), player_uuid: auth.player_uuid.clone(), skin_url: auth.skin_url.clone() };
+    let profile = SessionProfile {
+        expires_at: auth.expires_at,
+        player_name: auth.player_name.clone(),
+        player_uuid: auth.player_uuid.clone(),
+        skin_url: auth.skin_url.clone(),
+    };
     credential("minecraft-profile")?.set_password(&serde_json::to_string(&profile)?)?;
     Ok(())
 }
 
 pub fn clear_auth() -> Result<()> {
-    for name in ["minecraft-refresh-token", "minecraft-access-token", "minecraft-profile"] {
+    for name in [
+        "minecraft-refresh-token",
+        "minecraft-access-token",
+        "minecraft-profile",
+    ] {
         let _ = credential(name)?.delete_credential();
     }
     Ok(())
@@ -90,7 +133,13 @@ pub fn load_settings(root: &Path) -> LauncherSettings {
 
 #[allow(dead_code)]
 pub fn save_settings(root: &Path, settings: &LauncherSettings) -> Result<()> {
-    fs::write(root.join("settings.json"), serde_json::to_vec_pretty(&settings)?)?;
+    let temporary = root.join("settings.json.tmp");
+    let destination = root.join("settings.json");
+    fs::write(&temporary, serde_json::to_vec_pretty(settings)?)?;
+    if destination.exists() {
+        fs::remove_file(&destination)?;
+    }
+    fs::rename(temporary, destination)?;
     Ok(())
 }
 
@@ -99,10 +148,16 @@ fn credential(name: &str) -> Result<keyring::Entry> {
 }
 
 pub fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {
-    serde_json::from_reader(File::open(path).with_context(|| format!("could not open {}", path.display()))?)
-        .with_context(|| format!("could not read {}", path.display()))
+    serde_json::from_reader(
+        File::open(path).with_context(|| format!("could not open {}", path.display()))?,
+    )
+    .with_context(|| format!("could not read {}", path.display()))
 }
 
 pub fn http() -> Result<Client> {
-    Ok(Client::builder().user_agent(USER_AGENT).timeout(Duration::from_secs(20)).build()?)
+    Ok(Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(6))
+        .timeout(Duration::from_secs(30))
+        .build()?)
 }
