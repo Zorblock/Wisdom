@@ -20,6 +20,7 @@ const state = {
 };
 
 document.addEventListener("click", (event) => {
+  if (!event.target.closest(".custom-select")) closeCustomSelects();
   let changed = false;
   if (state.contextMenu && !event.target.closest(".context-menu")) {
     state.contextMenu = null;
@@ -33,7 +34,11 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && (state.contextMenu || state.accountMenu)) {
+  const openSelect = document.querySelector(".custom-select.open");
+  if (event.key === "Escape" && openSelect) {
+    event.preventDefault();
+    closeCustomSelect(openSelect, true);
+  } else if (event.key === "Escape" && (state.contextMenu || state.accountMenu)) {
     state.contextMenu = null;
     state.accountMenu = false;
     render();
@@ -46,6 +51,8 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+window.addEventListener("resize", () => closeCustomSelects());
+
 const icons = {
   library: "fa-solid fa-border-all",
   settings: "fa-solid fa-gear",
@@ -54,6 +61,7 @@ const icons = {
   folder: "fa-solid fa-folder",
   edit: "fa-solid fa-pen",
   chevron: "fa-solid fa-chevron-right",
+  down: "fa-solid fa-chevron-down",
   close: "fa-solid fa-xmark",
   check: "fa-solid fa-check",
   trash: "fa-solid fa-trash-can",
@@ -134,9 +142,160 @@ function versionList(selected = "") {
 }
 
 function versionOptions(selected) {
-  return versionList(selected)
-    .map((version) => `<option value="${escapeHtml(version.id)}" ${version.id === selected ? "selected" : ""}>${escapeHtml(version.id)}${version.kind === "snapshot" ? " · Snapshot" : ""}</option>`)
-    .join("");
+  return versionList(selected).map((version) => ({
+    value: version.id,
+    label: `${version.id}${version.kind === "snapshot" ? " · Snapshot" : ""}`,
+  }));
+}
+
+function customSelect(id, selected, options, ariaLabel) {
+  const current = options.find((option) => option.value === selected) || options[0];
+  const searchable = options.length > 12;
+  return `
+    <div class="custom-select" data-custom-select>
+      <input id="${escapeHtml(id)}" type="hidden" value="${escapeHtml(current?.value || "")}" />
+      <button type="button" class="select-trigger" role="combobox" aria-label="${escapeHtml(ariaLabel)}" aria-expanded="false" aria-controls="${escapeHtml(id)}-menu" aria-haspopup="listbox">
+        <span class="select-value">${escapeHtml(current?.label || "Select")}</span>${icon("down")}
+      </button>
+      <div id="${escapeHtml(id)}-menu" class="select-menu" role="listbox" aria-label="${escapeHtml(ariaLabel)}" hidden>
+        ${searchable ? `<div class="select-search-wrap"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><input class="select-search" type="text" placeholder="Search versions" autocomplete="off" spellcheck="false" aria-label="Search versions" /></div>` : ""}
+        <div class="select-options">
+          ${options.map((option) => `
+            <button type="button" class="select-option ${option.value === current?.value ? "selected" : ""}" role="option" aria-selected="${option.value === current?.value}" data-select-value="${escapeHtml(option.value)}" data-select-label="${escapeHtml(option.label)}" data-search="${escapeHtml(option.label.toLowerCase())}">
+              <span>${escapeHtml(option.label)}</span>${option.value === current?.value ? icon("check") : ""}
+            </button>`).join("")}
+          <div class="select-empty" hidden>No matching versions</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function closeCustomSelect(root, restoreFocus = false) {
+  if (!root?.classList.contains("open")) return;
+  root.classList.remove("open");
+  const trigger = root.querySelector(".select-trigger");
+  const menu = root.querySelector(".select-menu");
+  trigger?.setAttribute("aria-expanded", "false");
+  if (menu) {
+    menu.hidden = true;
+    menu.style.removeProperty("left");
+    menu.style.removeProperty("top");
+    menu.style.removeProperty("width");
+    menu.style.removeProperty("max-height");
+  }
+  const search = root.querySelector(".select-search");
+  if (search) search.value = "";
+  root.querySelectorAll(".select-option").forEach((option) => { option.hidden = false; });
+  root.querySelector(".select-empty")?.setAttribute("hidden", "");
+  if (restoreFocus) trigger?.focus();
+}
+
+function closeCustomSelects(except = null) {
+  document.querySelectorAll(".custom-select.open").forEach((root) => {
+    if (root !== except) closeCustomSelect(root);
+  });
+}
+
+function openCustomSelect(root) {
+  const trigger = root.querySelector(".select-trigger");
+  const menu = root.querySelector(".select-menu");
+  if (!trigger || !menu) return;
+  closeCustomSelects(root);
+  root.classList.add("open");
+  trigger.setAttribute("aria-expanded", "true");
+  menu.hidden = false;
+
+  const bounds = trigger.getBoundingClientRect();
+  const below = window.innerHeight - bounds.bottom - 8;
+  const above = bounds.top - 8;
+  const openAbove = below < 210 && above > below;
+  const available = Math.max(150, Math.min(360, openAbove ? above - 6 : below - 6));
+  menu.style.left = `${Math.max(8, Math.min(bounds.left, window.innerWidth - bounds.width - 8))}px`;
+  menu.style.width = `${bounds.width}px`;
+  menu.style.maxHeight = `${available}px`;
+  menu.style.top = `${openAbove ? Math.max(8, bounds.top - available - 6) : bounds.bottom + 6}px`;
+
+  requestAnimationFrame(() => {
+    const search = root.querySelector(".select-search");
+    const selected = root.querySelector(".select-option.selected");
+    selected?.scrollIntoView({ block: "nearest" });
+    (search || selected || root.querySelector(".select-option"))?.focus({ preventScroll: true });
+  });
+}
+
+function visibleSelectOptions(root) {
+  return [...root.querySelectorAll(".select-option")].filter((option) => !option.hidden);
+}
+
+function moveSelectFocus(root, direction) {
+  const options = visibleSelectOptions(root);
+  if (!options.length) return;
+  const current = options.indexOf(document.activeElement);
+  const next = current < 0 ? (direction > 0 ? 0 : options.length - 1) : (current + direction + options.length) % options.length;
+  options[next].focus({ preventScroll: true });
+  options[next].scrollIntoView({ block: "nearest" });
+}
+
+function chooseSelectOption(option) {
+  const root = option.closest(".custom-select");
+  const input = root?.querySelector('input[type="hidden"]');
+  if (!root || !input) return;
+  const value = option.dataset.selectValue;
+  const label = option.dataset.selectLabel;
+  input.value = value;
+  root.querySelector(".select-value").textContent = label;
+  root.querySelectorAll(".select-option").forEach((item) => {
+    const selected = item === option;
+    item.classList.toggle("selected", selected);
+    item.setAttribute("aria-selected", String(selected));
+    item.querySelector(".icon")?.remove();
+    if (selected) item.insertAdjacentHTML("beforeend", icon("check"));
+  });
+  closeCustomSelect(root, true);
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function filterSelectOptions(event) {
+  const root = event.currentTarget.closest(".custom-select");
+  const query = event.currentTarget.value.trim().toLowerCase();
+  let matches = 0;
+  root.querySelectorAll(".select-option").forEach((option) => {
+    const visible = !query || option.dataset.search.includes(query);
+    option.hidden = !visible;
+    if (visible) matches += 1;
+  });
+  root.querySelector(".select-empty").hidden = matches !== 0;
+}
+
+function bindCustomSelects() {
+  document.querySelectorAll(".custom-select").forEach((root) => {
+    const trigger = root.querySelector(".select-trigger");
+    trigger.addEventListener("click", () => {
+      if (root.classList.contains("open")) closeCustomSelect(root, true);
+      else openCustomSelect(root);
+    });
+    trigger.addEventListener("keydown", (event) => {
+      if (["Enter", " ", "ArrowDown", "ArrowUp"].includes(event.key)) {
+        event.preventDefault();
+        openCustomSelect(root);
+        if (event.key === "ArrowUp") requestAnimationFrame(() => moveSelectFocus(root, -1));
+      }
+    });
+    root.querySelectorAll(".select-option").forEach((option) => option.addEventListener("click", () => chooseSelectOption(option)));
+    root.querySelector(".select-search")?.addEventListener("input", filterSelectOptions);
+    root.querySelector(".select-menu").addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        moveSelectFocus(root, event.key === "ArrowDown" ? 1 : -1);
+      } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        const options = visibleSelectOptions(root);
+        const option = event.key === "Home" ? options[0] : options.at(-1);
+        option?.focus({ preventScroll: true });
+        option?.scrollIntoView({ block: "nearest" });
+      }
+    });
+  });
 }
 
 function formatLastPlayed(value) {
@@ -212,7 +371,7 @@ function renderLibrary() {
           </div>
         </div>
         <div class="launch-controls">
-          <label class="version-field"><span>Version</span><select id="launch-version">${versionOptions(selectedVersion)}</select></label>
+          <div class="version-field"><span>Version</span>${customSelect("launch-version", selectedVersion, versionOptions(selectedVersion), "Minecraft version")}</div>
           <button id="primary-action" class="button play-button ${running ? "running" : ""}" ${state.busy || running ? "disabled" : ""}>
             ${launching ? `<span class="spinner"></span><span><strong>Starting</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : running ? `${icon("check")}<span><strong>Running</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : `${icon(account ? "play" : "spark")}<span><strong>${account ? "Play" : "Add account"}</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>`}
           </button>
@@ -297,7 +456,7 @@ function renderModal() {
         <div class="modal-header"><h2 id="modal-title">${editing ? escapeHtml(instance.name) : "New instance"}</h2><button data-close-modal class="icon-button">${icon("close")}</button></div>
         <form id="instance-form">
           <label class="field"><span>Name</span><input id="instance-name" maxlength="48" value="${editing ? escapeHtml(instance.name) : "New instance"}" required autofocus /></label>
-          <label class="field"><span>Minecraft version</span><select id="instance-version">${versionOptions(selected)}</select></label>
+          <div class="field"><span>Minecraft version</span>${customSelect("instance-version", selected, versionOptions(selected), "Minecraft version")}</div>
           ${editing ? `
             <label class="setting-row inline-setting"><span><strong>Custom memory</strong></span><input id="override-ram" class="switch" type="checkbox" ${instance.ramMb ? "checked" : ""} /></label>
             <label id="instance-ram-wrap" class="field ${instance.ramMb ? "" : "disabled"}"><span>Memory <output id="instance-ram-output">${((instance.ramMb || state.data.settings.ramMb) / 1024).toFixed(1)} GB</output></span><input id="instance-ram" type="range" min="1024" max="16384" step="512" value="${instance.ramMb || state.data.settings.ramMb}" ${instance.ramMb ? "" : "disabled"} /></label>
@@ -320,6 +479,7 @@ function render() {
 }
 
 function bindEvents() {
+  bindCustomSelects();
   document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => {
     state.page = button.dataset.page;
     state.modal = null;

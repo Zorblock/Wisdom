@@ -28,9 +28,9 @@ body {
   background: #000;
 }
 
-button, input, select { font: inherit; }
+button, input { font: inherit; }
 button { color: inherit; }
-button, select, input[type="range"], input[type="checkbox"] { cursor: pointer; }
+button, input[type="range"], input[type="checkbox"] { cursor: pointer; }
 
 .app-shell {
   display: grid;
@@ -322,19 +322,71 @@ button, select, input[type="range"], input[type="checkbox"] { cursor: pointer; }
   letter-spacing: .07em;
 }
 
-.version-field select {
+.version-field .custom-select { margin-top: 2px; }
+.version-field .select-trigger { height: 27px; padding: 0; border: 0; background: transparent; font-size: 12px; font-weight: 580; }
+.version-field .select-trigger:hover, .version-field .custom-select.open .select-trigger { background: transparent; }
+
+.custom-select { position: relative; width: 100%; min-width: 0; color: var(--text); text-transform: none; letter-spacing: 0; }
+.select-trigger {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   width: 100%;
-  margin-top: 4px;
-  padding: 0 20px 0 0;
-  border: 0;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
   outline: 0;
   color: var(--text);
-  background: transparent;
-  font-size: 12px;
-  font-weight: 580;
-  text-transform: none;
-  letter-spacing: 0;
+  text-align: left;
+  background: #000;
+  font-size: 10px;
 }
+.select-trigger:hover { background: #070707; }
+.select-trigger:focus-visible, .custom-select.open .select-trigger { border-color: var(--accent); }
+.select-value { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select-trigger > .icon { width: 12px; height: 12px; color: var(--muted); }
+.custom-select.open .select-trigger > .icon { color: var(--accent); transform: rotate(180deg); }
+
+.select-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  color: var(--text);
+  background: #080808;
+}
+.select-menu[hidden] { display: none; }
+.select-search-wrap { display: flex; align-items: center; flex: 0 0 auto; height: 36px; margin-bottom: 5px; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted-2); background: #020202; }
+.select-search-wrap:focus-within { border-color: var(--accent); color: var(--accent); }
+.select-search-wrap > i { width: 15px; font-size: 10px; }
+.select-search, .field .select-search { min-width: 0; height: 32px; flex: 1; padding: 0; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 10px; cursor: text; }
+.select-search::placeholder, .field .select-search::placeholder { color: #555; }
+.select-options { min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: #3b3b3b transparent; }
+.select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 4px;
+  outline: 0;
+  color: var(--muted);
+  text-align: left;
+  background: transparent;
+  font-size: 10px;
+}
+.select-option:hover, .select-option:focus-visible { color: var(--text); background: #151515; }
+.select-option.selected { color: var(--text); background: rgba(var(--accent-rgb), .15); }
+.select-option > span:first-child { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select-option > .icon { width: 12px; height: 12px; color: var(--accent); }
+.select-empty { padding: 18px 10px; color: var(--muted-2); text-align: center; font-size: 9px; }
 
 .play-button {
   height: 58px;
@@ -481,7 +533,7 @@ input[type="range"] { width: 200px; height: 3px; accent-color: var(--accent); }
 .field { display: block; margin-bottom: 14px; }
 .field:last-child { margin-bottom: 0; }
 .field > span { display: flex; justify-content: space-between; margin: 0 0 6px; color: var(--muted); font-size: 9px; font-weight: 580; }
-.field input, .field select {
+.field input:not([type="hidden"]) {
   width: 100%;
   height: 38px;
   padding: 0 10px;
@@ -492,7 +544,7 @@ input[type="range"] { width: 200px; height: 3px; accent-color: var(--accent); }
   background: #000;
   font-size: 10px;
 }
-.field input:focus, .field select:focus { border-color: var(--accent); }
+.field input:focus { border-color: var(--accent); }
 .field input::placeholder { color: #4a4a4a; }
 .field.disabled { opacity: .4; }
 .field input[type="range"] { height: 3px; padding: 0; }

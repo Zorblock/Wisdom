@@ -19,10 +19,19 @@ public static class WisdomIconWriter
 {
     public static void Create(string input, string output)
     {
-        int[] sizes = { 16, 24, 32, 48, 64, 128, 256 };
+        int[] sizes = { 16, 20, 24, 32, 40, 48, 64, 96, 128, 256 };
         var frames = new List<byte[]>();
         using (var source = new Bitmap(input))
         {
+            // The complete owl is too detailed at taskbar sizes. Keep the original
+            // artwork for large assets, but use its bold head mark for the app icon.
+            var cropSize = source.Width * 0.68f;
+            var sourceCrop = new RectangleF(
+                (source.Width - cropSize) / 2f,
+                source.Height * 0.005f,
+                cropSize,
+                cropSize
+            );
             foreach (var size in sizes)
             {
                 using (var target = new Bitmap(size, size, PixelFormat.Format32bppArgb))
@@ -31,10 +40,16 @@ public static class WisdomIconWriter
                 {
                     graphics.Clear(Color.Transparent);
                     graphics.CompositingMode = CompositingMode.SourceCopy;
+                    graphics.CompositingQuality = CompositingQuality.HighQuality;
                     graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
                     graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
                     graphics.SmoothingMode = SmoothingMode.HighQuality;
-                    graphics.DrawImage(source, new Rectangle(0, 0, size, size));
+                    graphics.DrawImage(
+                        source,
+                        new Rectangle(0, 0, size, size),
+                        sourceCrop,
+                        GraphicsUnit.Pixel
+                    );
                     target.Save(memory, ImageFormat.Png);
                     frames.Add(memory.ToArray());
                 }
