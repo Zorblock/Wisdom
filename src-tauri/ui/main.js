@@ -168,6 +168,14 @@ function versionOptions(selected) {
   }));
 }
 
+function launchBehaviorOptions() {
+  return [
+    { value: "keepOpen", label: "Keep Wisdom open" },
+    { value: "hide", label: "Hide until game exits" },
+    { value: "close", label: "Close Wisdom" },
+  ];
+}
+
 function customSelect(id, selected, options, ariaLabel) {
   const current = options.find((option) => option.value === selected) || options[0];
   const searchable = options.length > 12;
@@ -560,6 +568,7 @@ function renderContextMenu() {
 function renderSettings() {
   const settings = state.data.settings;
   const ramGb = (settings.ramMb / 1024).toFixed(settings.ramMb % 1024 ? 1 : 0);
+  const closesOnLaunch = settings.launchBehavior === "close";
   return `
     <header class="topbar"><h1>Settings</h1><button id="save-settings" class="button primary" ${state.busy ? "disabled" : ""}>${icon("check")}Save</button></header>
     <div class="content-scroll settings-content">
@@ -567,8 +576,9 @@ function renderSettings() {
         <div class="settings-intro"><h2>Game</h2></div>
         <div class="settings-card">
           <label class="setting-row range-row"><span><strong>Memory</strong></span><span class="range-control"><output id="ram-output">${ramGb} GB</output><input id="ram" type="range" min="1024" max="16384" step="512" value="${settings.ramMb}" /></span></label>
+          <div class="setting-row"><span><strong>When Minecraft starts</strong></span><div class="setting-select">${customSelect("launch-behavior", settings.launchBehavior, launchBehaviorOptions(), "Launcher behavior")}</div></div>
           <label class="setting-row"><span><strong>Show snapshots</strong></span><input id="snapshots" class="switch" type="checkbox" ${settings.showSnapshots ? "checked" : ""} /></label>
-          <label class="setting-row"><span><strong>Open game console</strong></span><input id="console" class="switch" type="checkbox" ${settings.openConsole ? "checked" : ""} /></label>
+          <label id="console-setting" class="setting-row ${closesOnLaunch ? "disabled" : ""}"><span><strong>Open game console</strong></span><input id="console" class="switch" type="checkbox" ${settings.openConsole && !closesOnLaunch ? "checked" : ""} ${closesOnLaunch ? "disabled" : ""} /></label>
         </div>
       </section>
       <section class="settings-group">
@@ -667,8 +677,18 @@ function bindEvents() {
   });
   document.querySelector("#save-settings")?.addEventListener("click", saveSettings);
   document.querySelector("#ram")?.addEventListener("input", updateRamOutput);
+  document.querySelector("#launch-behavior")?.addEventListener("change", updateLaunchBehavior);
   document.querySelector("#override-ram")?.addEventListener("change", toggleInstanceRam);
   document.querySelector("#instance-ram")?.addEventListener("input", updateInstanceRamOutput);
+}
+
+function updateLaunchBehavior(event) {
+  const consoleInput = document.querySelector("#console");
+  const disabled = event.target.value === "close";
+  if (!consoleInput) return;
+  if (disabled) consoleInput.checked = false;
+  consoleInput.disabled = disabled;
+  document.querySelector("#console-setting")?.classList.toggle("disabled", disabled);
 }
 
 function openModal(modal) {
@@ -1005,6 +1025,7 @@ async function saveSettings() {
       openConsole: document.querySelector("#console").checked,
       jvmArgs: document.querySelector("#global-jvm").value.trim(),
       gameArgs: document.querySelector("#global-game").value.trim(),
+      launchBehavior: document.querySelector("#launch-behavior").value,
     } });
     state.status = "Settings saved.";
     notify("Settings saved.", "success");
@@ -1022,6 +1043,7 @@ async function launch() {
   if (!instance) return;
   if (isRunning(instance.id)) return;
   const version = state.selectedVersion || instance.version;
+  const launchBehavior = state.data.settings.launchBehavior;
   state.busy = `launch:${instance.id}`;
   state.data.runningInstances.push(instance.id);
   state.progress = 0;
@@ -1035,6 +1057,13 @@ async function launch() {
     state.progress = 1;
     state.status = `${updated.name} is running.`;
     notify("Minecraft is running.", "success");
+    if (launchBehavior !== "keepOpen") {
+      try {
+        await invoke("apply_launch_behavior", { instanceId: instance.id });
+      } catch (error) {
+        notify(`Could not apply launcher behavior: ${cleanError(error)}`, "error");
+      }
+    }
   } catch (error) {
     state.data.runningInstances = state.data.runningInstances.filter((id) => id !== instance.id);
     state.progress = 0;

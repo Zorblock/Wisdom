@@ -67,6 +67,17 @@ pub struct LauncherSettings {
     pub jvm_args: String,
     #[serde(default, alias = "game_args")]
     pub game_args: String,
+    #[serde(default, alias = "launch_behavior")]
+    pub launch_behavior: LaunchBehavior,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LaunchBehavior {
+    #[default]
+    KeepOpen,
+    Hide,
+    Close,
 }
 
 fn default_ram_mb() -> u32 {
@@ -81,6 +92,7 @@ impl Default for LauncherSettings {
             ram_mb: default_ram_mb(),
             jvm_args: String::new(),
             game_args: String::new(),
+            launch_behavior: LaunchBehavior::default(),
         }
     }
 }

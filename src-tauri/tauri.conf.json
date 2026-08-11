@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.zorblock.wisdom",
   "build": {
-    "beforeDevCommand": "npm run frontend:dev",
+    "beforeDevCommand": "node ./node_modules/vite/bin/vite.js --config src-tauri/vite.config.js",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "dist"

@@ -20,6 +20,7 @@ struct RuntimeState {
     signing_in: AtomicBool,
     running_instances: Arc<Mutex<HashSet<String>>>,
     console_logs: Arc<Mutex<HashMap<String, VecDeque<ConsoleLine>>>>,
+    main_window_hidden: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -234,10 +235,50 @@ fn save_launcher_settings(
     mut settings: storage::LauncherSettings,
 ) -> Result<storage::LauncherSettings, String> {
     settings.ram_mb = settings.ram_mb.clamp(512, 65_536);
+    if settings.launch_behavior == storage::LaunchBehavior::Close {
+        settings.open_console = false;
+    }
     let root = storage::user_data_dir().map_err(|error| error.to_string())?;
     storage::prepare_storage(&root).map_err(|error| error.to_string())?;
     storage::save_settings(&root, &settings).map_err(|error| error.to_string())?;
     Ok(settings)
+}
+
+#[tauri::command]
+fn apply_launch_behavior(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    instance_id: String,
+) -> Result<(), String> {
+    let running_instances = state
+        .running_instances
+        .lock()
+        .map_err(|_| "Could not read instance status".to_owned())?;
+    if !running_instances.contains(&instance_id) {
+        return Ok(());
+    }
+
+    let root = storage::user_data_dir().map_err(|error| error.to_string())?;
+    let result = match storage::load_settings(&root).launch_behavior {
+        storage::LaunchBehavior::KeepOpen => Ok(()),
+        storage::LaunchBehavior::Hide => {
+            let window = app
+                .get_webview_window("main")
+                .ok_or_else(|| "Main window is not available".to_owned())?;
+            state.main_window_hidden.store(true, Ordering::Release);
+            if let Err(error) = window.hide() {
+                state.main_window_hidden.store(false, Ordering::Release);
+                return Err(format!("Could not hide the launcher: {error}"));
+            }
+            Ok(())
+        }
+        storage::LaunchBehavior::Close => {
+            app.exit(0);
+            Ok(())
+        }
+    };
+    drop(running_instances);
+    result
 }
 
 #[tauri::command]
@@ -597,6 +638,7 @@ async fn launch(
             }
 
             let running = Arc::clone(&state.running_instances);
+            let main_window_hidden = Arc::clone(&state.main_window_hidden);
             let monitor_app = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 let exit = child.wait();
@@ -618,8 +660,17 @@ async fn launch(
                         message,
                     );
                 }
-                if let Ok(mut instances) = running.lock() {
+                let no_games_running = if let Ok(mut instances) = running.lock() {
                     instances.remove(&instance_id);
+                    instances.is_empty()
+                } else {
+                    false
+                };
+                if no_games_running && main_window_hidden.swap(false, Ordering::AcqRel) {
+                    if let Some(window) = monitor_app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
                 }
                 let _ = monitor_app.emit(
                     "instance-status",
@@ -677,6 +728,7 @@ pub fn run() {
             update_instance,
             delete_instance,
             save_launcher_settings,
+            apply_launch_behavior,
             open_instance_folder,
             open_data_folder,
             get_system_accent,
@@ -684,6 +736,14 @@ pub fn run() {
             open_instance_console,
             launch,
         ])
+        .setup(|app| {
+            #[cfg(debug_assertions)]
+            {
+                let handle = app.handle().clone();
+                ctrlc::set_handler(move || handle.exit(0))?;
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("Tauri application error");
 }

@@ -5,8 +5,8 @@
   "description": "Wisdom Minecraft Launcher",
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
-    "start": "tauri dev",
+    "dev": "node ./node_modules/@tauri-apps/cli/tauri.js dev",
+    "start": "node ./node_modules/@tauri-apps/cli/tauri.js dev",
     "frontend:dev": "vite --config src-tauri/vite.config.js",
     "check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "build": "vite build --config src-tauri/vite.config.js",
