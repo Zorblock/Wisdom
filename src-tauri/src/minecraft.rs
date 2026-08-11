@@ -16,6 +16,7 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+const LAUNCHER_NAME: &str = "Wisdom";
 pub type ProgressReporter = dyn Fn(f32, String) + Send + Sync;
 
 #[derive(Clone, Debug)]
@@ -337,7 +338,7 @@ pub fn install_and_launch(
         .to_string();
     let substitutions = HashMap::from([
         ("${auth_player_name}", auth.player_name.clone()),
-        ("${version_name}", meta.id.clone()),
+        ("${version_name}", format!("{} / {LAUNCHER_NAME}", meta.id)),
         ("${game_directory}", game_dir.to_string_lossy().to_string()),
         ("${assets_root}", assets_root.to_string_lossy().to_string()),
         (
@@ -349,14 +350,14 @@ pub fn install_and_launch(
         ("${auth_access_token}", auth.minecraft_access_token.clone()),
         ("${auth_session}", auth.minecraft_access_token.clone()),
         ("${user_type}", "msa".into()),
-        ("${version_type}", "Wisdom".into()),
+        ("${version_type}", entry.kind.clone()),
         (
             "${natives_directory}",
             natives_dir.to_string_lossy().to_string(),
         ),
         ("${classpath}", classpath_text),
         ("${classpath_separator}", ";".into()),
-        ("${launcher_name}", "Wisdom".into()),
+        ("${launcher_name}", LAUNCHER_NAME.into()),
         ("${launcher_version}", env!("CARGO_PKG_VERSION").into()),
         ("${clientid}", options.client_id.clone()),
         ("${auth_xuid}", String::new()),
