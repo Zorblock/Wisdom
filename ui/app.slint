@@ -1,4 +1,4 @@
-import { ComboBox, HorizontalBox, VerticalBox } from "std-widgets.slint";
+import { CheckBox, ComboBox, HorizontalBox, VerticalBox } from "std-widgets.slint";
 
 component AccentButton inherits Rectangle {
     in property <string> text;
@@ -54,17 +54,23 @@ export component AppWindow inherits Window {
     in property <[string]> versions;
     in property <int> selected-version-index;
     in property <string> selected-version;
+    in property <[string]> instances;
+    in property <int> selected-instance-index;
     in property <string> account-name;
     in property <length> account-width: 210px;
     in property <image> player-head;
     in property <string> status-text;
     in property <bool> busy;
+    in-out property <bool> open-console: false;
     in property <bool> show-login-dialog: false;
     in property <bool> show-progress: false;
     in property <float> progress-value: 0;
     in property <color> accent-color: #6ea8fe;
     callback start-game();
     callback select-version(int);
+    callback select-instance(int);
+    callback create-instance();
+    callback set-open-console(bool);
     callback login();
     callback cancel-login();
     callback logout();
@@ -200,6 +206,34 @@ export component AppWindow inherits Window {
                 min-width: 310px;
                 min-height: 42px;
                 selected(value) => { root.select-version(self.current-index); }
+                }
+                CheckBox {
+                    text: "Open Console";
+                    checked: root.open-console;
+                    enabled: !root.busy;
+                    width: 310px;
+                    toggled => { root.set-open-console(self.checked); }
+                }
+                HorizontalBox {
+                    width: 310px;
+                    spacing: 8px;
+                    ComboBox {
+                        model: root.instances;
+                        current-index: root.selected-instance-index;
+                        enabled: !root.busy;
+                        horizontal-stretch: 1;
+                        min-height: 38px;
+                        selected(value) => { root.select-instance(self.current-index); }
+                    }
+                    AccentButton {
+                        text: "+";
+                        enabled: !root.busy;
+                        min-width: 38px;
+                        min-height: 38px;
+                        fill: #30333a;
+                        label-size: 20px;
+                        clicked => { root.create-instance(); }
+                    }
                 }
             }
             Rectangle { horizontal-stretch: 1; }

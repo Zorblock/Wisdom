@@ -1,4 +1,7 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod auth;
+mod instances;
 mod minecraft;
 mod profile;
 mod runtime;
@@ -27,57 +30,133 @@ fn main() -> Result<()> {
     let window = AppWindow::new()?;
     window.set_accent_color(accent_color());
     window.set_status_text("Loading versions …".into());
+    window.set_open_console(storage::load_open_console(&data_dir));
     if let Ok(auth) = storage::load_auth() { update_account(&window, &data_dir, auth); }
 
     let versions = Arc::new(Mutex::new(Vec::<ManifestVersion>::new()));
     let selected = Arc::new(Mutex::new(String::new()));
+    let instances = Arc::new(Mutex::new(Vec::<instances::Instance>::new()));
+    let selected_instance = Arc::new(Mutex::new(String::new()));
     let active_login = Arc::new(Mutex::new(None::<Arc<AtomicBool>>));
     let reporter = status_reporter(window.as_weak());
     let progress = progress_reporter(window.as_weak());
-    load_version_list(&window, &versions, &selected);
-    bind_version_selection(&window, &versions, &selected);
+    load_version_list(&window, &data_dir, &versions, &selected, &instances, &selected_instance);
+    bind_version_selection(&window, &data_dir, &versions, &selected, &instances, &selected_instance);
+    bind_instance_selection(&window, &versions, &selected, &instances, &selected_instance);
+    bind_instance_creation(&window, &data_dir, &selected, &instances, &selected_instance);
     bind_login(&window, &data_dir, &active_login, &reporter);
     bind_cancel_login(&window, &active_login);
     bind_logout(&window);
-    bind_game_start(&window, &data_dir, &versions, &selected, &reporter, &progress);
+    bind_console_setting(&window, &data_dir);
+    bind_game_start(&window, &data_dir, &versions, &selected, &instances, &selected_instance, &reporter, &progress);
 
     window.run()?;
     Ok(())
 }
 
-fn load_version_list(window: &AppWindow, versions: &Arc<Mutex<Vec<ManifestVersion>>>, selected: &Arc<Mutex<String>>) {
+fn load_version_list(window: &AppWindow, data_dir: &std::path::Path, versions: &Arc<Mutex<Vec<ManifestVersion>>>, selected: &Arc<Mutex<String>>, instances: &Arc<Mutex<Vec<instances::Instance>>>, selected_instance: &Arc<Mutex<String>>) {
     let weak = window.as_weak();
     let versions = Arc::clone(versions);
     let selected = Arc::clone(selected);
-    thread::spawn(move || match minecraft::load_versions() {
-        Ok((manifest, list)) => {
+    let instances = Arc::clone(instances);
+    let selected_instance = Arc::clone(selected_instance);
+    let data_dir = data_dir.to_owned();
+    thread::spawn(move || {
+        let outcome = (|| -> Result<()> {
+            let (manifest, list) = minecraft::load_versions()?;
             let default_id = manifest.latest.release;
+            let mut instance_list = instances::load_or_create(&data_dir, &default_id)?;
+            let active_instance = instance_list.first().cloned().expect("an instance was created");
+            let selected_id = if list.iter().any(|version| version.id == active_instance.version) { active_instance.version.clone() } else { default_id.clone() };
+            if selected_id != active_instance.version {
+                instance_list[0].version = selected_id.clone();
+                instances::save(&data_dir, &instance_list[0])?;
+            }
             if let Ok(mut stored) = versions.lock() { *stored = list.clone(); }
-            if let Ok(mut current) = selected.lock() { *current = default_id.clone(); }
+            if let Ok(mut current) = selected.lock() { *current = selected_id.clone(); }
+            if let Ok(mut stored) = instances.lock() { *stored = instance_list.clone(); }
+            if let Ok(mut current) = selected_instance.lock() { *current = active_instance.id.clone(); }
             let rows: Vec<SharedString> = list.iter().map(|version| version.id.clone().into()).collect();
-            let release_index = list.iter().position(|version| version.id == default_id).unwrap_or(0) as i32;
-            let _ = slint::invoke_from_event_loop(move || if let Some(ui) = weak.upgrade() {
+            let version_index = list.iter().position(|version| version.id == selected_id).unwrap_or(0) as i32;
+            let instance_rows: Vec<SharedString> = instance_list.iter().map(|instance| instance.name.clone().into()).collect();
+            let ui_weak = weak.clone();
+            let _ = slint::invoke_from_event_loop(move || if let Some(ui) = ui_weak.upgrade() {
                 ui.set_versions(ModelRc::new(VecModel::from(rows)));
-                ui.set_selected_version(default_id.into());
-                ui.set_selected_version_index(release_index);
+                ui.set_selected_version(selected_id.into());
+                ui.set_selected_version_index(version_index);
+                ui.set_instances(ModelRc::new(VecModel::from(instance_rows)));
+                ui.set_selected_instance_index(0);
                 ui.set_status_text("Choose a version and start playing.".into());
             });
-        }
-        Err(error) => {
+            Ok(())
+        })();
+        if let Err(error) = outcome {
             let message = format!("Could not load versions: {error:#}");
             let _ = slint::invoke_from_event_loop(move || if let Some(ui) = weak.upgrade() { ui.set_status_text(message.into()); });
         }
     });
 }
 
-fn bind_version_selection(window: &AppWindow, versions: &Arc<Mutex<Vec<ManifestVersion>>>, selected: &Arc<Mutex<String>>) {
+fn bind_version_selection(window: &AppWindow, data_dir: &std::path::Path, versions: &Arc<Mutex<Vec<ManifestVersion>>>, selected: &Arc<Mutex<String>>, instances: &Arc<Mutex<Vec<instances::Instance>>>, selected_instance: &Arc<Mutex<String>>) {
     let versions = Arc::clone(versions);
     let selected = Arc::clone(selected);
+    let instances = Arc::clone(instances);
+    let selected_instance = Arc::clone(selected_instance);
+    let data_dir = data_dir.to_owned();
     let weak = window.as_weak();
     window.on_select_version(move |index| {
         if let Some(version) = versions.lock().ok().and_then(|items| items.get(index.max(0) as usize).cloned()) {
             if let Ok(mut current) = selected.lock() { *current = version.id.clone(); }
+            let active_id = selected_instance.lock().map(|value| value.clone()).unwrap_or_default();
+            if let Ok(mut items) = instances.lock() {
+                if let Some(instance) = items.iter_mut().find(|instance| instance.id == active_id) {
+                    instance.version = version.id.clone();
+                    let _ = instances::save(&data_dir, instance);
+                }
+            }
             if let Some(ui) = weak.upgrade() { ui.set_selected_version(version.id.into()); }
+        }
+    });
+}
+
+fn bind_instance_selection(window: &AppWindow, versions: &Arc<Mutex<Vec<ManifestVersion>>>, selected: &Arc<Mutex<String>>, instances: &Arc<Mutex<Vec<instances::Instance>>>, selected_instance: &Arc<Mutex<String>>) {
+    let versions = Arc::clone(versions);
+    let selected = Arc::clone(selected);
+    let instances = Arc::clone(instances);
+    let selected_instance = Arc::clone(selected_instance);
+    let weak = window.as_weak();
+    window.on_select_instance(move |index| {
+        let instance = instances.lock().ok().and_then(|items| items.get(index.max(0) as usize).cloned());
+        let Some(instance) = instance else { return; };
+        if let Ok(mut active) = selected_instance.lock() { *active = instance.id.clone(); }
+        if let Ok(mut current) = selected.lock() { *current = instance.version.clone(); }
+        let version_index = versions.lock().ok().and_then(|items| items.iter().position(|version| version.id == instance.version)).unwrap_or(0) as i32;
+        if let Some(ui) = weak.upgrade() {
+            ui.set_selected_version(instance.version.into());
+            ui.set_selected_version_index(version_index);
+        }
+    });
+}
+
+fn bind_instance_creation(window: &AppWindow, data_dir: &std::path::Path, selected: &Arc<Mutex<String>>, instances: &Arc<Mutex<Vec<instances::Instance>>>, selected_instance: &Arc<Mutex<String>>) {
+    let data_dir = data_dir.to_owned();
+    let selected = Arc::clone(selected);
+    let instances = Arc::clone(instances);
+    let selected_instance = Arc::clone(selected_instance);
+    let weak = window.as_weak();
+    window.on_create_instance(move || {
+        let version = selected.lock().map(|value| value.clone()).unwrap_or_default();
+        if version.is_empty() { return; }
+        let Ok(mut items) = instances.lock() else { return; };
+        let Ok(instance) = instances::create(&data_dir, &version, &items) else { return; };
+        items.push(instance.clone());
+        let index = items.len() as i32 - 1;
+        let rows: Vec<SharedString> = items.iter().map(|instance| instance.name.clone().into()).collect();
+        if let Ok(mut active) = selected_instance.lock() { *active = instance.id.clone(); }
+        if let Some(ui) = weak.upgrade() {
+            ui.set_instances(ModelRc::new(VecModel::from(rows)));
+            ui.set_selected_instance_index(index);
+            ui.set_status_text(format!("Created {} ({version}).", instance.name).into());
         }
     });
 }
@@ -136,17 +215,30 @@ fn bind_logout(window: &AppWindow) {
     });
 }
 
-fn bind_game_start(window: &AppWindow, data_dir: &std::path::Path, versions: &Arc<Mutex<Vec<ManifestVersion>>>, selected: &Arc<Mutex<String>>, reporter: &Reporter, progress: &DownloadProgress) {
+fn bind_console_setting(window: &AppWindow, data_dir: &std::path::Path) {
+    let data_dir = data_dir.to_owned();
+    window.on_set_open_console(move |enabled| {
+        let _ = storage::save_open_console(&data_dir, enabled);
+    });
+}
+
+fn bind_game_start(window: &AppWindow, data_dir: &std::path::Path, versions: &Arc<Mutex<Vec<ManifestVersion>>>, selected: &Arc<Mutex<String>>, instances: &Arc<Mutex<Vec<instances::Instance>>>, selected_instance: &Arc<Mutex<String>>, reporter: &Reporter, progress: &DownloadProgress) {
     let weak = window.as_weak();
     let data_dir = data_dir.to_owned();
     let versions = Arc::clone(versions);
     let selected = Arc::clone(selected);
+    let instances = Arc::clone(instances);
+    let selected_instance = Arc::clone(selected_instance);
     let reporter = Arc::clone(reporter);
     let progress = Arc::clone(progress);
     window.on_start_game(move || {
+        let open_console = weak.upgrade().is_some_and(|ui| ui.get_open_console());
         let version_id = selected.lock().map(|value| value.clone()).unwrap_or_default();
         let version = versions.lock().ok().and_then(|items| items.iter().find(|item| item.id == version_id).cloned());
         let Some(version) = version else { return; };
+        let active_id = selected_instance.lock().map(|value| value.clone()).unwrap_or_default();
+        let instance = instances.lock().ok().and_then(|items| items.iter().find(|instance| instance.id == active_id).cloned());
+        let Some(instance) = instance else { return; };
         if let Some(ui) = weak.upgrade() {
             ui.set_busy(true);
             ui.set_show_progress(true);
@@ -154,12 +246,13 @@ fn bind_game_start(window: &AppWindow, data_dir: &std::path::Path, versions: &Ar
         }
         let weak_done = weak.clone();
         let root = data_dir.clone();
+        let game_dir = instances::game_dir(&root, &instance);
         let report = Arc::clone(&reporter);
         let progress = Arc::clone(&progress);
         thread::spawn(move || {
             let outcome = (|| -> Result<()> {
                 let auth = auth::ensure_session(MICROSOFT_CLIENT_ID)?;
-                minecraft::install_and_launch(&root, &version, &auth, &*report, &*progress)
+                minecraft::install_and_launch(&root, &game_dir, &version, &auth, open_console, &*report, &*progress)
             })();
             let _ = slint::invoke_from_event_loop(move || if let Some(ui) = weak_done.upgrade() {
                 ui.set_busy(false);

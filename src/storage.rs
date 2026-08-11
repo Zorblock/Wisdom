@@ -26,13 +26,19 @@ struct SessionProfile {
     skin_url: Option<String>,
 }
 
+#[derive(Default, Serialize, Deserialize)]
+struct LauncherSettings {
+    #[serde(default)]
+    open_console: bool,
+}
+
 pub fn user_data_dir() -> Result<PathBuf> {
     let app_data = std::env::var_os("APPDATA").context("APPDATA is not set")?;
     Ok(PathBuf::from(app_data).join("zorblock").join("userData").join("Wisdom"))
 }
 
 pub fn prepare_storage(root: &Path) -> Result<()> {
-    for folder in ["cache", "versions", "libraries", "assets/objects", "assets/indexes", "game", "natives"] {
+    for folder in ["cache", "versions", "libraries", "assets/objects", "assets/indexes", "instances", "natives"] {
         fs::create_dir_all(root.join(folder))?;
     }
     Ok(())
@@ -57,6 +63,19 @@ pub fn clear_auth() -> Result<()> {
     for name in ["minecraft-refresh-token", "minecraft-access-token", "minecraft-profile"] {
         let _ = credential(name)?.delete_credential();
     }
+    Ok(())
+}
+
+pub fn load_open_console(root: &Path) -> bool {
+    fs::read_to_string(root.join("settings.json"))
+        .ok()
+        .and_then(|contents| serde_json::from_str::<LauncherSettings>(&contents).ok())
+        .is_some_and(|settings| settings.open_console)
+}
+
+pub fn save_open_console(root: &Path, open_console: bool) -> Result<()> {
+    let settings = LauncherSettings { open_console };
+    fs::write(root.join("settings.json"), serde_json::to_vec_pretty(&settings)?)?;
     Ok(())
 }
 

@@ -3,11 +3,16 @@ use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use sha1::{Digest, Sha1};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 pub type ProgressReporter = dyn Fn(f32, String) + Send + Sync;
@@ -30,7 +35,7 @@ struct Download { url: String, path: Option<String>, sha1: Option<String> }
 struct Library { downloads: Option<LibraryDownloads>, rules: Option<Vec<Rule>>, natives: Option<HashMap<String, String>>, extract: Option<Extract> }
 #[derive(Debug, Deserialize)]
 struct LibraryDownloads { artifact: Option<Download>, classifiers: Option<HashMap<String, Download>> }
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct Extract { exclude: Option<Vec<String>> }
 #[derive(Debug, Deserialize)]
 struct LaunchArguments { game: Vec<Argument>, jvm: Vec<Argument> }
@@ -56,7 +61,7 @@ pub fn load_versions() -> Result<(VersionManifest, Vec<ManifestVersion>)> {
     Ok((manifest, list))
 }
 
-pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState, report: &(dyn Fn(String) + Send + Sync), progress: &ProgressReporter) -> Result<()> {
+pub fn install_and_launch(root: &Path, game_dir: &Path, entry: &ManifestVersion, auth: &AuthState, open_console: bool, report: &(dyn Fn(String) + Send + Sync), progress: &ProgressReporter) -> Result<()> {
     let client = http()?;
     report(format!("Loading Minecraft {} metadata …", entry.id));
     let meta: VersionMeta = client.get(&entry.url).send()?.error_for_status()?.json()?;
@@ -70,22 +75,33 @@ pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState
     let mut classpath = vec![client_jar];
     let natives_dir = root.join("natives").join(&meta.id);
     fs::create_dir_all(&natives_dir)?;
+    let mut libraries = Vec::new();
+    let mut native_archives = Vec::new();
+    let mut seen_libraries = HashSet::new();
+    let mut seen_natives = HashSet::new();
     for library in &meta.libraries {
         if !rules_allow(library.rules.as_deref()) { continue; }
         let Some(downloads) = &library.downloads else { continue; };
         if let Some(artifact) = &downloads.artifact {
             let path = library_path(root, artifact)?;
-            download_file(&client, artifact, &path, "Library", progress)?;
-            classpath.push(path);
+            if seen_libraries.insert(path.clone()) {
+                libraries.push((artifact.clone(), path.clone()));
+                classpath.push(path);
+            }
         }
         if let Some(classifier) = native_classifier(library) {
             if let Some(native) = downloads.classifiers.as_ref().and_then(|values| values.get(&classifier)) {
                 let path = library_path(root, native)?;
-                download_file(&client, native, &path, "Windows component", progress)?;
-                extract_native(&path, &natives_dir, library.extract.as_ref())?;
+                if seen_natives.insert(path.clone()) {
+                    native_archives.push((native.clone(), path, library.extract.clone()));
+                }
             }
         }
     }
+    download_batch(&client, libraries, "libraries", progress)?;
+    let native_downloads = native_archives.iter().map(|(download, path, _)| (download.clone(), path.clone())).collect();
+    download_batch(&client, native_downloads, "Windows components", progress)?;
+    for (_, archive, extract) in native_archives { extract_native(&archive, &natives_dir, extract.as_ref())?; }
 
     let assets_root = root.join("assets");
     let assets_index_name = if let Some(asset_index) = &meta.asset_index {
@@ -93,21 +109,24 @@ pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState
         let index_path = assets_root.join("indexes").join(format!("{}.json", asset_index.path.clone().unwrap_or_else(|| asset_index.url.rsplit('/').next().unwrap_or("index.json").to_owned())));
         download_file(&client, asset_index, &index_path, "Asset index", progress)?;
         let index: AssetIndex = read_json(&index_path)?;
-        let total_assets = index.objects.len();
-        for (asset_number, asset) in index.objects.values().enumerate() {
+        let mut seen_hashes = HashSet::new();
+        let mut missing_assets = Vec::new();
+        for asset in index.objects.values() {
+            if !seen_hashes.insert(asset.hash.clone()) { continue; }
             let path = assets_root.join("objects").join(&asset.hash[0..2]).join(&asset.hash);
             if !path.exists() {
-                let download = Download { url: format!("https://resources.download.minecraft.net/{}/{}", &asset.hash[0..2], asset.hash), path: None, sha1: Some(asset.hash.clone()) };
-                let label = format!("Assets {}/{}", asset_number + 1, total_assets);
-                download_file(&client, &download, &path, &label, progress)?;
+                missing_assets.push((
+                    Download { url: format!("https://resources.download.minecraft.net/{}/{}", &asset.hash[0..2], asset.hash), path: None, sha1: Some(asset.hash.clone()) },
+                    path,
+                ));
             }
         }
+        download_batch(&client, missing_assets, "assets", progress)?;
         meta.asset_index.as_ref().and_then(|d| d.path.clone()).unwrap_or_else(|| index_path.file_stem().unwrap_or_default().to_string_lossy().to_string())
     } else { String::new() };
 
     report("Starting Java …".into());
-    let game_dir = root.join("game");
-    fs::create_dir_all(&game_dir)?;
+    fs::create_dir_all(game_dir)?;
     let classpath_text = std::env::join_paths(&classpath)?.to_string_lossy().to_string();
     let substitutions = HashMap::from([
         ("${auth_player_name}", auth.player_name.clone()), ("${version_name}", meta.id.clone()), ("${game_directory}", game_dir.to_string_lossy().to_string()), ("${assets_root}", assets_root.to_string_lossy().to_string()),
@@ -117,11 +136,22 @@ pub fn install_and_launch(root: &Path, entry: &ManifestVersion, auth: &AuthState
     ]);
     let (mut jvm_args, game_args) = build_arguments(&meta, &substitutions)?;
     if !jvm_args.iter().any(|arg| arg == "-cp" || arg == "-classpath") { jvm_args.extend(["-cp".to_owned(), substitutions["${classpath}"].clone()]); }
-    Command::new(java).args(&jvm_args).arg(&meta.main_class).args(&game_args).current_dir(&game_dir).spawn().context("Could not start Java. Install Java 21+ or set JAVA_HOME")?;
+    let mut game = Command::new(java);
+    game.args(&jvm_args).arg(&meta.main_class).args(&game_args).current_dir(game_dir);
+    #[cfg(windows)]
+    game.creation_flags(if open_console { 0x0000_0010 } else { 0x0800_0000 });
+    game.spawn().context("Could not start Java. Install Java 21+ or set JAVA_HOME")?;
     Ok(())
 }
 
 fn download_file(client: &Client, source: &Download, destination: &Path, label: &str, progress: &ProgressReporter) -> Result<()> {
+    download_to_disk(client, source, destination, |received, total| {
+        let amount = if total == 0 { 0.0 } else { received as f32 / total as f32 };
+        progress(amount, format!("Downloading {label} · {}%", (amount * 100.0) as u32));
+    })
+}
+
+fn download_to_disk(client: &Client, source: &Download, destination: &Path, mut on_progress: impl FnMut(u64, u64)) -> Result<()> {
     if destination.exists() && source.sha1.as_ref().is_none_or(|hash| sha1_file(destination).is_ok_and(|actual| actual.eq_ignore_ascii_case(hash))) { return Ok(()); }
     fs::create_dir_all(destination.parent().context("Download target has no parent directory")?)?;
     let mut response = client.get(&source.url).send()?.error_for_status()?;
@@ -137,14 +167,53 @@ fn download_file(client: &Client, source: &Download, destination: &Path, label: 
         output.write_all(&buffer[..count])?;
         hasher.update(&buffer[..count]);
         received += count as u64;
-        let amount = if total == 0 { 0.0 } else { received as f32 / total as f32 };
-        progress(amount, format!("Downloading {label} · {}%", (amount * 100.0) as u32));
+        on_progress(received, total);
     }
     if let Some(expected) = &source.sha1 {
         let actual = format!("{:x}", hasher.finalize());
         if !actual.eq_ignore_ascii_case(expected) { fs::remove_file(&temporary)?; bail!("Checksum mismatch for {}", source.url); }
     }
     fs::rename(temporary, destination)?;
+    Ok(())
+}
+
+fn download_batch(client: &Client, tasks: Vec<(Download, PathBuf)>, category: &str, progress: &ProgressReporter) -> Result<()> {
+    if tasks.is_empty() {
+        progress(1.0, format!("All {category} are ready."));
+        return Ok(());
+    }
+
+    let total = tasks.len();
+    progress(0.0, format!("Downloading {category} · 0/{total}"));
+    let (sender, receiver) = mpsc::channel();
+    for task in tasks { sender.send(task).expect("download queue should be open"); }
+    drop(sender);
+
+    let queue = Arc::new(Mutex::new(receiver));
+    let completed = Arc::new(AtomicUsize::new(0));
+    let failure = Arc::new(Mutex::new(None::<String>));
+
+    thread::scope(|scope| {
+        for _ in 0..total.min(8) {
+            let client = client.clone();
+            let queue = Arc::clone(&queue);
+            let completed = Arc::clone(&completed);
+            let failure = Arc::clone(&failure);
+            scope.spawn(move || loop {
+                if failure.lock().ok().and_then(|error| error.clone()).is_some() { break; }
+                let task = queue.lock().ok().and_then(|queue| queue.recv().ok());
+                let Some((source, destination)) = task else { break; };
+                if let Err(error) = download_to_disk(&client, &source, &destination, |_, _| {}) {
+                    if let Ok(mut stored) = failure.lock() { *stored = Some(format!("Could not download {}: {error:#}", source.url)); }
+                    break;
+                }
+                let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                progress(count as f32 / total as f32, format!("Downloading {category} · {count}/{total}"));
+            });
+        }
+    });
+
+    if let Some(error) = failure.lock().ok().and_then(|error| error.clone()) { bail!(error); }
     Ok(())
 }
 
