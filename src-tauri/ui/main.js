@@ -95,6 +95,9 @@ const icons = {
   download: "fa-solid fa-download",
   warning: "fa-solid fa-triangle-exclamation",
   back: "fa-solid fa-arrow-left",
+  power: "fa-solid fa-power-off",
+  sortAsc: "fa-solid fa-arrow-down-a-z",
+  sortDesc: "fa-solid fa-arrow-up-z-a",
 };
 
 function icon(name) {
@@ -130,6 +133,7 @@ const modsFeature = createModsFeature({
   icon,
   escapeHtml,
   cleanError,
+  customSelect,
   notify,
   rerender: render,
   setStatus: (message) => {
@@ -226,10 +230,10 @@ function customSelect(id, selected, options, ariaLabel) {
         <span class="select-value">${escapeHtml(current?.label || "Select")}</span>${icon("down")}
       </button>
       <div id="${escapeHtml(id)}-menu" class="select-menu" role="listbox" aria-label="${escapeHtml(ariaLabel)}" hidden>
-        ${searchable ? `<div class="select-search-wrap"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><input class="select-search" type="text" placeholder="Search versions" autocomplete="off" spellcheck="false" aria-label="Search versions" /></div>` : ""}
+        ${searchable ? `<div class="select-search-wrap"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><input class="select-search" type="text" placeholder="Search options" autocomplete="off" spellcheck="false" aria-label="Search options" /></div>` : ""}
         <div class="select-options" tabindex="-1">
           <div class="select-spacer"><div class="select-window"></div></div>
-          <div class="select-empty" hidden>No matching versions</div>
+          <div class="select-empty" hidden>No matching options</div>
         </div>
       </div>
     </div>`;
@@ -531,12 +535,6 @@ function renderLibrary() {
       <section class="launch-surface">
         <div class="instance-summary">
           <div class="instance-heading"><h2>${escapeHtml(instance.name)}</h2><p>${running ? "Running" : escapeHtml(formatLastPlayed(instance.lastPlayed))}</p></div>
-          <div class="instance-actions">
-            ${running && state.data.settings.openConsole ? `<button id="open-console" class="icon-button" aria-label="Open game console" title="Open game console">${icon("terminal")}</button>` : ""}
-            ${instance.loader !== "vanilla" ? `<button id="manage-mods" class="icon-button" aria-label="Manage mods" title="Manage mods">${icon("mods")}</button>` : ""}
-            <button id="open-instance" class="icon-button" aria-label="Open instance folder" title="Open instance folder">${icon("folder")}</button>
-            <button id="edit-instance" class="icon-button" aria-label="Edit instance" title="Edit instance">${icon("edit")}</button>
-          </div>
         </div>
         <div class="launch-controls">
           ${instance.loader === "vanilla" ? `<div class="version-field"><span>Version</span>${customSelect("launch-version", selectedVersion, versionOptions(selectedVersion), "Minecraft version")}</div>` : `<div class="version-field fixed-version"><span>${escapeHtml(loaderLabel(instance.loader))}</span><strong>${escapeHtml(instance.version)}</strong></div>`}
@@ -546,19 +544,13 @@ function renderLibrary() {
         </div>
       </section>
 
-      <section class="library-section">
-        <div class="section-heading"><h3>Instances</h3><span class="count-badge">${state.data.instances.length}</span></div>
-        <div class="instance-grid">
-          ${state.data.instances.map((item) => {
-            const itemRunning = isRunning(item.id);
-            return `
-            <button class="instance-card ${item.id === instance.id ? "selected" : ""}" data-instance="${escapeHtml(item.id)}">
-              <span class="instance-symbol card-symbol">${icon("instance")}</span>
-              <span class="card-copy"><strong>${escapeHtml(item.name)}</strong><small>${item.loader !== "vanilla" ? `${escapeHtml(loaderLabel(item.loader))} · ` : ""}Minecraft ${escapeHtml(item.version)}</small></span>
-              ${itemRunning ? `<span class="running-badge"><span></span>Running</span>` : ""}
-              ${icon("chevron")}
-            </button>`;
-          }).join("")}
+      <section class="instance-tools-section">
+        <div class="section-heading"><h3>Instance</h3></div>
+        <div class="instance-tools">
+          ${instance.loader !== "vanilla" ? `<button id="manage-mods" class="instance-tool">${icon("mods")}<span><strong>Mods</strong><small>Manage content and updates</small></span>${icon("chevron")}</button>` : ""}
+          <button id="edit-instance" class="instance-tool">${icon("settings")}<span><strong>Settings</strong><small>Version, loader and memory</small></span>${icon("chevron")}</button>
+          <button id="open-instance" class="instance-tool">${icon("folder")}<span><strong>Folder</strong><small>Open instance files</small></span>${icon("chevron")}</button>
+          ${running && state.data.settings.openConsole ? `<button id="open-console" class="instance-tool">${icon("terminal")}<span><strong>Console</strong><small>View the running game</small></span>${icon("chevron")}</button>` : ""}
         </div>
       </section>
     </div>`;

@@ -31,6 +31,7 @@ pub struct SearchHit {
     pub author: String,
     pub icon_url: Option<String>,
     pub downloads: u64,
+    pub categories: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -41,8 +42,13 @@ pub struct InstalledModView {
     pub version_number: String,
     pub icon_url: Option<String>,
     pub explicit: bool,
+    pub enabled: bool,
     pub compatible: bool,
     pub missing: bool,
+    pub file_name: String,
+    pub file_size: u64,
+    pub dependency_count: usize,
+    pub required_by_count: usize,
     pub update_available: bool,
     pub latest_version_number: Option<String>,
 }
@@ -70,6 +76,8 @@ struct InstalledMod {
     icon_url: Option<String>,
     #[serde(default)]
     explicit: bool,
+    #[serde(default = "default_true")]
+    enabled: bool,
     #[serde(default)]
     dependencies: Vec<String>,
     #[serde(default)]
@@ -93,6 +101,8 @@ struct ApiSearchHit {
     author: String,
     icon_url: Option<String>,
     downloads: u64,
+    #[serde(default)]
+    display_categories: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,28 +158,45 @@ fn manifest_version() -> u32 {
     MANIFEST_VERSION
 }
 
+fn default_true() -> bool {
+    true
+}
+
 pub fn has_installed_mods(root: &Path, instance: &Instance) -> Result<bool> {
     Ok(!load_manifest(root, instance)?.mods.is_empty())
 }
 
-pub fn search(root: &Path, instance_id: &str, query: &str, offset: usize) -> Result<SearchResults> {
+pub fn search(
+    root: &Path,
+    instance_id: &str,
+    query: &str,
+    index: &str,
+    category: Option<&str>,
+    offset: usize,
+) -> Result<SearchResults> {
     let instance = instances::load(root, instance_id)?;
     let loader = require_loader(&instance)?;
     let query = query.trim();
     if query.chars().count() > 100 {
         bail!("Search query is too long");
     }
-    let facets = serde_json::to_string(&[
-        [format!("categories:{loader}")],
-        [format!("versions:{}", instance.version)],
-        ["project_type:mod".to_owned()],
-    ])?;
+    let index = validate_search_index(index)?;
+    let mut facets = vec![
+        vec![format!("categories:{loader}")],
+        vec![format!("versions:{}", instance.version)],
+        vec!["project_type:mod".to_owned()],
+    ];
+    if let Some(category) = category.map(str::trim).filter(|value| !value.is_empty()) {
+        validate_category(category)?;
+        facets.push(vec![format!("categories:{category}")]);
+    }
+    let facets = serde_json::to_string(&facets)?;
     let response: ApiSearchResults = http()?
         .get(format!("{API_BASE}/search"))
         .query(&[
             ("query", query.to_owned()),
             ("facets", facets),
-            ("index", "relevance".to_owned()),
+            ("index", index.to_owned()),
             ("offset", offset.min(10_000).to_string()),
             ("limit", "24".to_owned()),
         ])
@@ -187,6 +214,12 @@ pub fn search(root: &Path, instance_id: &str, query: &str, offset: usize) -> Res
                 author: hit.author,
                 icon_url: safe_icon_url(hit.icon_url),
                 downloads: hit.downloads,
+                categories: hit
+                    .display_categories
+                    .into_iter()
+                    .filter(|category| validate_category(category).is_ok())
+                    .take(3)
+                    .collect(),
             })
             .collect(),
         offset: response.offset,
@@ -209,23 +242,46 @@ pub fn list_installed(
         HashMap::new()
     };
     let mods_dir = mods_dir(root, &instance);
+    let required_by = manifest
+        .mods
+        .iter()
+        .flat_map(|item| item.dependencies.iter())
+        .fold(HashMap::<&str, usize>::new(), |mut counts, project_id| {
+            *counts.entry(project_id).or_default() += 1;
+            counts
+        });
     let mut result = manifest
         .mods
         .iter()
         .map(|installed| {
-            let update = updates.get(&installed.sha512);
+            let update = installed
+                .explicit
+                .then(|| updates.get(&installed.sha512))
+                .flatten();
             InstalledModView {
                 project_id: installed.project_id.clone(),
                 title: installed.title.clone(),
                 version_number: installed.version_number.clone(),
                 icon_url: safe_icon_url(installed.icon_url.clone()),
                 explicit: installed.explicit,
+                enabled: installed.enabled,
                 compatible: installed
                     .game_versions
                     .iter()
                     .any(|version| version == &instance.version)
                     && installed.loaders.iter().any(|value| value == loader),
                 missing: managed_file_is_missing_or_modified(&mods_dir, installed),
+                file_name: installed.file_name.clone(),
+                file_size: managed_file_path(&mods_dir, installed)
+                    .ok()
+                    .and_then(|path| path.metadata().ok())
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0),
+                dependency_count: installed.dependencies.len(),
+                required_by_count: required_by
+                    .get(installed.project_id.as_str())
+                    .copied()
+                    .unwrap_or(0),
                 update_available: update.is_some_and(|value| value.id != installed.version_id),
                 latest_version_number: update
                     .filter(|value| value.id != installed.version_id)
@@ -287,18 +343,52 @@ pub fn remove(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<In
     list_installed(root, instance_id, true)
 }
 
+pub fn set_enabled(
+    root: &Path,
+    instance_id: &str,
+    project_id: &str,
+    enabled: bool,
+) -> Result<Vec<InstalledModView>> {
+    validate_project_id(project_id)?;
+    let instance = instances::load(root, instance_id)?;
+    require_loader(&instance)?;
+    let directory = mods_dir(root, &instance);
+    let mut manifest = load_manifest(root, &instance)?;
+    let item = manifest
+        .mods
+        .iter_mut()
+        .find(|item| item.project_id == project_id)
+        .context("Mod is not installed")?;
+    if item.enabled == enabled {
+        return list_installed(root, instance_id, false);
+    }
+    let source = managed_file_path(&directory, item)?;
+    if !source.is_file() {
+        bail!("The managed mod file is missing; update the mod before changing its state");
+    }
+    let destination = managed_path_for(&directory, &item.file_name, enabled)?;
+    if destination.exists() {
+        bail!("A mod file with the target name already exists");
+    }
+    fs::rename(&source, &destination).context("Could not change the mod state")?;
+    item.enabled = enabled;
+    save_manifest(root, &instance, &manifest)?;
+    list_installed(root, instance_id, false)
+}
+
 pub fn update(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<InstalledModView>> {
     validate_project_id(project_id)?;
     let instance = instances::load(root, instance_id)?;
     let loader = require_loader(&instance)?;
     let client = http()?;
     let mut manifest = load_manifest(root, &instance)?;
-    let explicit = manifest
+    let installed = manifest
         .mods
         .iter()
         .find(|item| item.project_id == project_id)
-        .context("Mod is not installed")?
-        .explicit;
+        .context("Mod is not installed")?;
+    let explicit = installed.explicit;
+    let exact_version = (!explicit).then(|| installed.version_id.clone());
     let mut resolving = HashSet::new();
     install_project(
         &client,
@@ -306,7 +396,7 @@ pub fn update(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<In
         &instance,
         loader,
         project_id,
-        None,
+        exact_version.as_deref(),
         explicit,
         &mut manifest,
         &mut resolving,
@@ -428,16 +518,17 @@ fn install_project(
     let file_name = unique_file_name(manifest, project_id, &safe_jar_name(&file.filename)?);
     let directory = mods_dir(root, instance);
     fs::create_dir_all(&directory)?;
-    let destination = directory.join(&file_name);
-    if !destination.is_file() || sha512_file(&destination)? != sha512 {
-        download_mod(client, file, &destination, &sha512)?;
-    }
-
     let previous = manifest
         .mods
         .iter()
         .find(|item| item.project_id == project_id)
         .cloned();
+    let enabled = previous.as_ref().is_none_or(|item| item.enabled);
+    let destination = managed_path_for(&directory, &file_name, enabled)?;
+    if !destination.is_file() || sha512_file(&destination)? != sha512 {
+        download_mod(client, file, &destination, &sha512)?;
+    }
+
     let installed = InstalledMod {
         project_id: project.id,
         version_id: version.id,
@@ -448,6 +539,7 @@ fn install_project(
         sha512,
         icon_url: safe_icon_url(project.icon_url),
         explicit: previous.as_ref().is_some_and(|item| item.explicit) || explicit,
+        enabled,
         dependencies,
         game_versions: version.game_versions,
         loaders: version.loaders,
@@ -461,10 +553,11 @@ fn install_project(
     } else {
         manifest.mods.push(installed);
     }
-    if let Some(previous) = previous
-        && previous.file_name != file_name
-    {
-        remove_managed_file(&directory, &previous.file_name)?;
+    if let Some(previous) = previous {
+        let previous_path = managed_file_path(&directory, &previous)?;
+        if previous_path != destination {
+            remove_managed_file(&directory, &previous)?;
+        }
     }
     save_manifest(root, instance, manifest)?;
     resolving.remove(project_id);
@@ -524,7 +617,7 @@ fn fetch_updates(
     let hashes = manifest
         .mods
         .iter()
-        .filter(|item| !item.sha512.is_empty())
+        .filter(|item| item.explicit && !item.sha512.is_empty())
         .map(|item| item.sha512.as_str())
         .collect::<Vec<_>>();
     if hashes.is_empty() {
@@ -646,7 +739,7 @@ fn garbage_collect(root: &Path, instance: &Instance, manifest: &mut ContentManif
             .iter()
             .filter(|item| removable.contains(&item.project_id))
         {
-            remove_managed_file(&directory, &item.file_name)?;
+            remove_managed_file(&directory, item)?;
         }
         manifest
             .mods
@@ -655,9 +748,8 @@ fn garbage_collect(root: &Path, instance: &Instance, manifest: &mut ContentManif
     Ok(())
 }
 
-fn remove_managed_file(directory: &Path, file_name: &str) -> Result<()> {
-    let safe = safe_jar_name(file_name)?;
-    let path = directory.join(safe);
+fn remove_managed_file(directory: &Path, installed: &InstalledMod) -> Result<()> {
+    let path = managed_file_path(directory, installed)?;
     if path.parent() != Some(directory) {
         bail!("Invalid managed mod path");
     }
@@ -725,6 +817,29 @@ fn validate_project_id(value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_search_index(value: &str) -> Result<&'static str> {
+    match value {
+        "relevance" => Ok("relevance"),
+        "downloads" => Ok("downloads"),
+        "follows" => Ok("follows"),
+        "newest" => Ok("newest"),
+        "updated" => Ok("updated"),
+        _ => bail!("Invalid Modrinth sort option"),
+    }
+}
+
+fn validate_category(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 48
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_lowercase() || character == '-')
+    {
+        bail!("Invalid Modrinth category");
+    }
+    Ok(())
+}
+
 fn safe_jar_name(value: &str) -> Result<String> {
     let path = Path::new(value);
     if path.file_name() != Some(OsStr::new(value))
@@ -734,6 +849,24 @@ fn safe_jar_name(value: &str) -> Result<String> {
         bail!("Modrinth returned an unsafe mod filename");
     }
     Ok(value.to_owned())
+}
+
+fn managed_path_for(directory: &Path, file_name: &str, enabled: bool) -> Result<PathBuf> {
+    let safe = safe_jar_name(file_name)?;
+    let name = if enabled {
+        safe
+    } else {
+        format!("{safe}.disabled")
+    };
+    let path = directory.join(name);
+    if path.parent() != Some(directory) {
+        bail!("Invalid managed mod path");
+    }
+    Ok(path)
+}
+
+fn managed_file_path(directory: &Path, installed: &InstalledMod) -> Result<PathBuf> {
+    managed_path_for(directory, &installed.file_name, installed.enabled)
 }
 
 fn unique_file_name(manifest: &ContentManifest, project_id: &str, file_name: &str) -> String {
@@ -760,11 +893,14 @@ fn safe_icon_url(value: Option<String>) -> Option<String> {
 }
 
 fn managed_file_is_missing_or_modified(directory: &Path, installed: &InstalledMod) -> bool {
-    let path = directory.join(&installed.file_name);
-    !path.is_file()
-        || sha512_file(&path)
-            .map(|actual| !actual.eq_ignore_ascii_case(&installed.sha512))
-            .unwrap_or(true)
+    managed_file_path(directory, installed)
+        .and_then(|path| {
+            if !path.is_file() {
+                return Ok(true);
+            }
+            sha512_file(&path).map(|actual| !actual.eq_ignore_ascii_case(&installed.sha512))
+        })
+        .unwrap_or(true)
 }
 
 fn sha512_file(path: &Path) -> Result<String> {
@@ -809,5 +945,40 @@ mod tests {
             file_type: Some("sources-jar".to_owned()),
         };
         assert!(!is_installable_jar(&file));
+    }
+
+    #[test]
+    fn old_manifests_keep_mods_enabled() {
+        let installed: InstalledMod = serde_json::from_value(serde_json::json!({
+            "projectId": "AABBCCDD",
+            "versionId": "EEFFGGHH",
+            "title": "Example",
+            "versionNumber": "1.0.0",
+            "fileName": "example.jar",
+            "sha1": "abc",
+            "sha512": "def"
+        }))
+        .unwrap();
+        assert!(installed.enabled);
+        assert!(
+            managed_file_path(Path::new("mods"), &installed)
+                .unwrap()
+                .ends_with("example.jar")
+        );
+        let mut disabled = installed;
+        disabled.enabled = false;
+        assert!(
+            managed_file_path(Path::new("mods"), &disabled)
+                .unwrap()
+                .ends_with("example.jar.disabled")
+        );
+    }
+
+    #[test]
+    fn validates_search_filters() {
+        assert_eq!(validate_search_index("downloads").unwrap(), "downloads");
+        assert!(validate_search_index("popular").is_err());
+        assert!(validate_category("game-mechanics").is_ok());
+        assert!(validate_category("../mods").is_err());
     }
 }

@@ -774,6 +774,7 @@ pub fn run() {
             content_commands::search_modrinth,
             content_commands::install_modrinth_mod,
             content_commands::remove_modrinth_mod,
+            content_commands::set_modrinth_mod_enabled,
             content_commands::update_modrinth_mod,
             content_commands::update_all_modrinth_mods,
             launch,

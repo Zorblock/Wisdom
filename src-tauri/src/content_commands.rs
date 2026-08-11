@@ -19,13 +19,49 @@ pub async fn list_instance_mods(
 pub async fn search_modrinth(
     instance_id: String,
     query: String,
+    index: String,
+    category: Option<String>,
     offset: usize,
 ) -> Result<SearchResults, String> {
     run_blocking(move || {
         let root = storage::user_data_dir()?;
-        modrinth::search(&root, &instance_id, &query, offset)
+        modrinth::search(
+            &root,
+            &instance_id,
+            &query,
+            &index,
+            category.as_deref(),
+            offset,
+        )
     })
     .await
+}
+
+#[tauri::command]
+pub async fn set_modrinth_mod_enabled(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    instance_id: String,
+    project_id: String,
+    enabled: bool,
+) -> Result<Vec<InstalledModView>, String> {
+    ensure_stopped(&state, &instance_id)?;
+    let result = run_blocking(move || {
+        let root = storage::user_data_dir()?;
+        modrinth::set_enabled(&root, &instance_id, &project_id, enabled)
+    })
+    .await;
+    if result.is_ok() {
+        let _ = app.emit(
+            "status",
+            if enabled {
+                "Mod enabled."
+            } else {
+                "Mod disabled."
+            },
+        );
+    }
+    result
 }
 
 #[tauri::command]

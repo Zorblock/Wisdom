@@ -1,15 +1,35 @@
 .mods-topbar > div { display: flex; align-items: center; gap: 10px; }
 .mods-topbar .icon-button { width: 32px; height: 32px; }
-.mods-content { max-width: 980px; margin: 0 auto; padding-top: 26px; }
+.mods-content { max-width: 1000px; margin: 0 auto; padding-top: 26px; }
 .mods-instance-bar { display: flex; align-items: center; justify-content: space-between; min-height: 58px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 7px; background: #030303; }
 .mods-instance-bar strong, .mods-instance-bar small { display: block; }
 .mods-instance-bar strong { font-size: 11px; font-weight: 620; }
 .mods-instance-bar small { margin-top: 3px; color: var(--muted-2); font-size: 8px; }
 .mods-section { margin-top: 26px; }
+.compatibility-note { margin: 0 0 2px auto; color: var(--muted-2); font-size: 8px; }
+
+.mods-toolbar { display: grid; gap: 8px; margin-bottom: 8px; }
+.installed-toolbar { grid-template-columns: minmax(220px, 1fr) 160px 36px; }
+.discover-toolbar { grid-template-columns: minmax(250px, 1fr) 170px 160px; }
+.compact-select { min-width: 0; }
+.compact-select .select-trigger { height: 38px; }
+.mods-search { display: flex; align-items: center; height: 38px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--muted-2); background: #000; }
+.mods-search:focus-within { border-color: var(--accent); color: var(--accent); }
+.mods-search i { width: 20px; font-size: 9px; }
+.mods-search input { min-width: 0; width: 100%; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 10px; cursor: text; }
+.mods-filter-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+.filter-chips { display: flex; align-items: center; gap: 5px; overflow-x: auto; scrollbar-width: none; }
+.filter-chip { height: 28px; padding: 0 9px; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: #030303; font-size: 8px; }
+.filter-chip:hover { color: var(--text); border-color: var(--line-strong); }
+.filter-chip.active { color: var(--text); border-color: rgba(var(--accent-rgb), .45); background: rgba(var(--accent-rgb), .12); }
+.enabled-first { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; color: var(--muted); font-size: 8px; }
+
 .managed-mod-list, .modrinth-results { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: #020202; }
-.managed-mod, .modrinth-result { display: flex; align-items: center; gap: 12px; min-height: 62px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.managed-mod, .modrinth-result { display: flex; align-items: center; gap: 12px; min-height: 66px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .managed-mod:last-child, .modrinth-result:last-child { border-bottom: 0; }
 .managed-mod.attention { background: #080604; }
+.managed-mod.disabled-mod { opacity: .58; }
+.managed-mod.disabled-mod:hover { opacity: .82; }
 .mod-project-icon { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: #070707; }
 .mod-project-icon img { width: 100%; height: 100%; object-fit: cover; image-rendering: auto; }
 .mod-project-icon .icon { width: 14px; height: 14px; }
@@ -17,19 +37,18 @@
 .mod-copy strong, .mod-copy small, .mod-copy > span { display: block; }
 .mod-copy strong { overflow: hidden; font-size: 10px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
 .mod-copy small { margin-top: 4px; overflow: hidden; color: var(--muted); font-size: 8px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
-.mod-copy > span { margin-top: 4px; color: #555; font-size: 7px; }
+.mod-copy > span { margin-top: 4px; overflow: hidden; color: #5d5d5d; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
 .mod-state, .mod-actions { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
 .mod-tag { padding: 4px 6px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); background: #080808; font-size: 7px; font-weight: 620; }
 .mod-tag.update { border-color: rgba(var(--accent-rgb), .35); color: var(--accent); background: rgba(var(--accent-rgb), .08); }
 .mod-tag.warning { border-color: #584125; color: #d7a865; background: #100b05; }
 .mod-actions .icon-button { width: 30px; height: 30px; }
 .danger-icon { color: var(--danger); }
-.mods-search { display: flex; align-items: center; height: 38px; margin-bottom: 9px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--muted-2); background: #000; }
-.mods-search:focus-within { border-color: var(--accent); color: var(--accent); }
-.mods-search i { width: 20px; font-size: 9px; }
-.mods-search input { min-width: 0; width: 100%; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 10px; }
-.modrinth-result { min-height: 74px; }
+
+.modrinth-result { min-height: 80px; }
 .modrinth-result .button { min-width: 88px; }
+.result-categories { display: flex !important; gap: 4px; margin-top: 5px !important; }
+.result-categories > span { padding: 2px 5px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted-2); text-transform: capitalize; }
 .mods-placeholder, .mods-empty { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 82px; color: var(--muted-2); font-size: 9px; }
 .mods-error { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding: 10px 12px; border: 1px solid #5c3232; border-radius: 6px; color: #e39090; background: #0c0505; font-size: 9px; line-height: 1.45; }
 .mods-error .icon { flex: 0 0 auto; }
@@ -37,7 +56,9 @@
 .mods-pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 12px; color: var(--muted-2); font-size: 8px; }
 .mods-pagination .button { min-width: 76px; }
 
-@media (max-width: 760px) {
+@media (max-width: 900px) {
+  .discover-toolbar { grid-template-columns: 1fr 1fr; }
+  .discover-toolbar .mods-search { grid-column: 1 / -1; }
+  .installed-toolbar { grid-template-columns: 1fr 150px 36px; }
   .mod-state { display: none; }
-  .modrinth-result .mod-copy small { max-width: 260px; }
 }
