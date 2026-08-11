@@ -7,7 +7,8 @@
     "dev": "cargo run",
     "start": "cargo run",
     "check": "cargo check",
-    "build": "cargo build --release",
-    "setup": "npm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-installer.ps1"
+    "build": "cargo build",
+    "build:release": "cargo build --release",
+    "setup": "npm run build:release && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-installer.ps1"
   }
 }

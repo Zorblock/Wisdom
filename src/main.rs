@@ -38,6 +38,7 @@ fn main() -> Result<()> {
     bind_version_selection(&window, &versions, &selected);
     bind_login(&window, &data_dir, &active_login, &reporter);
     bind_cancel_login(&window, &active_login);
+    bind_logout(&window);
     bind_game_start(&window, &data_dir, &versions, &selected, &reporter, &progress);
 
     window.run()?;
@@ -123,6 +124,18 @@ fn bind_cancel_login(window: &AppWindow, active_login: &Arc<Mutex<Option<Arc<Ato
     });
 }
 
+fn bind_logout(window: &AppWindow) {
+    let weak = window.as_weak();
+    window.on_logout(move || {
+        if storage::clear_auth().is_err() { return; }
+        if let Some(ui) = weak.upgrade() {
+            ui.set_account_name("".into());
+            ui.set_player_head(slint::Image::default());
+            ui.set_status_text("Signed out.".into());
+        }
+    });
+}
+
 fn bind_game_start(window: &AppWindow, data_dir: &std::path::Path, versions: &Arc<Mutex<Vec<ManifestVersion>>>, selected: &Arc<Mutex<String>>, reporter: &Reporter, progress: &DownloadProgress) {
     let weak = window.as_weak();
     let data_dir = data_dir.to_owned();
@@ -176,6 +189,7 @@ fn progress_reporter(weak: slint::Weak<AppWindow>) -> DownloadProgress {
 
 fn update_account(window: &AppWindow, data_dir: &std::path::Path, auth: storage::AuthState) {
     window.set_account_name(auth.player_name.clone().into());
+    window.set_account_width((64 + auth.player_name.chars().count().min(24) * 8) as f32);
     let weak = window.as_weak();
     let root = data_dir.to_owned();
     thread::spawn(move || {

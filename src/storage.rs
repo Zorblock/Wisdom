@@ -18,6 +18,14 @@ pub struct AuthState {
     pub skin_url: Option<String>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct SessionProfile {
+    expires_at: DateTime<Utc>,
+    player_name: String,
+    player_uuid: String,
+    skin_url: Option<String>,
+}
+
 pub fn user_data_dir() -> Result<PathBuf> {
     let app_data = std::env::var_os("APPDATA").context("APPDATA is not set")?;
     Ok(PathBuf::from(app_data).join("zorblock").join("userData").join("Wisdom"))
@@ -31,15 +39,29 @@ pub fn prepare_storage(root: &Path) -> Result<()> {
 }
 
 pub fn load_auth() -> Result<AuthState> {
-    let serialized = keyring::Entry::new("Wisdom Minecraft Launcher", "minecraft-session")?
-        .get_password().context("no saved Microsoft session")?;
-    Ok(serde_json::from_str(&serialized)?)
+    let refresh_token = credential("minecraft-refresh-token")?.get_password().context("no saved Microsoft session")?;
+    let minecraft_access_token = credential("minecraft-access-token")?.get_password().context("no saved Minecraft session")?;
+    let profile: SessionProfile = serde_json::from_str(&credential("minecraft-profile")?.get_password()?)?;
+    Ok(AuthState { minecraft_access_token, microsoft_refresh_token: refresh_token, expires_at: profile.expires_at, player_name: profile.player_name, player_uuid: profile.player_uuid, skin_url: profile.skin_url })
 }
 
 pub fn save_auth(auth: &AuthState) -> Result<()> {
-    keyring::Entry::new("Wisdom Minecraft Launcher", "minecraft-session")?
-        .set_password(&serde_json::to_string(auth)?)?;
+    credential("minecraft-refresh-token")?.set_password(&auth.microsoft_refresh_token)?;
+    credential("minecraft-access-token")?.set_password(&auth.minecraft_access_token)?;
+    let profile = SessionProfile { expires_at: auth.expires_at, player_name: auth.player_name.clone(), player_uuid: auth.player_uuid.clone(), skin_url: auth.skin_url.clone() };
+    credential("minecraft-profile")?.set_password(&serde_json::to_string(&profile)?)?;
     Ok(())
+}
+
+pub fn clear_auth() -> Result<()> {
+    for name in ["minecraft-refresh-token", "minecraft-access-token", "minecraft-profile"] {
+        let _ = credential(name)?.delete_credential();
+    }
+    Ok(())
+}
+
+fn credential(name: &str) -> Result<keyring::Entry> {
+    Ok(keyring::Entry::new("Wisdom Minecraft Launcher", name)?)
 }
 
 pub fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {

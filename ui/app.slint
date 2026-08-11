@@ -24,11 +24,38 @@ component AccentButton inherits Rectangle {
     }
 }
 
+component LogoutButton inherits Rectangle {
+    callback clicked();
+    border-radius: 8px;
+    background: #2a2d35;
+    Text {
+        x: 12px;
+        width: parent.width - 42px;
+        text: "Sign out";
+        color: #f4f6fb;
+        font-size: 14px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    Text {
+        x: parent.width - 28px;
+        width: 18px;
+        text: "\u{e8ac}";
+        color: #c8ccd6;
+        font-family: "Segoe MDL2 Assets";
+        font-size: 15px;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+    }
+    TouchArea { clicked => { root.clicked(); } }
+}
+
 export component AppWindow inherits Window {
     in property <[string]> versions;
     in property <int> selected-version-index;
     in property <string> selected-version;
     in property <string> account-name;
+    in property <length> account-width: 210px;
     in property <image> player-head;
     in property <string> status-text;
     in property <bool> busy;
@@ -40,6 +67,7 @@ export component AppWindow inherits Window {
     callback select-version(int);
     callback login();
     callback cancel-login();
+    callback logout();
 
     title: "Wisdom";
     icon: @image-url("../assets/logo.png");
@@ -78,31 +106,39 @@ export component AppWindow inherits Window {
                 clicked => { root.login(); }
             }
             if root.account-name != "": Rectangle {
-                min-width: 210px;
+                width: root.account-width;
                 min-height: 38px;
                 background: #22252d;
                 border-radius: 8px;
+                clip: true;
                 Image {
-                    x: 7px;
-                    y: 5px;
-                    width: 28px;
-                    height: 28px;
+                    x: 0px;
+                    y: 0px;
+                    width: parent.height;
+                    height: parent.height;
                     source: root.player-head;
                     source-clip-x: 8;
                     source-clip-y: 8;
                     source-clip-width: 8;
                     source-clip-height: 8;
                     image-fit: fill;
+                    image-rendering: pixelated;
                 }
                 Text {
-                    x: 44px;
-                    width: parent.width - 54px;
+                    x: parent.height + 10px;
+                    width: parent.width - parent.height - 20px;
                     text: root.account-name;
                     color: #ffffff;
                     font-size: 14px;
                     font-weight: 600;
                     vertical-alignment: center;
                 }
+            }
+            if root.account-name != "": Rectangle { width: 8px; }
+            if root.account-name != "": LogoutButton {
+                width: 108px;
+                min-height: 38px;
+                clicked => { root.logout(); }
             }
         }
 
@@ -170,12 +206,6 @@ export component AppWindow inherits Window {
         }
 
         Rectangle { vertical-stretch: 1; }
-        Text {
-            text: "Vanilla  •  Windows  •  Your data stays on this device";
-            color: #727987;
-            font-size: 12px;
-            horizontal-alignment: center;
-        }
     }
 
     if root.show-login-dialog: Rectangle {
