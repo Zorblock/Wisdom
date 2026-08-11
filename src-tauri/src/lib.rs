@@ -1,8 +1,11 @@
 #![allow(linker_messages)]
 
 mod auth;
+mod content_commands;
 mod instances;
 mod minecraft;
+mod modloaders;
+mod modrinth;
 mod runtime;
 mod storage;
 
@@ -16,9 +19,9 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 const MICROSOFT_CLIENT_ID: &str = "6f216a95-c659-4c83-818b-a4d2c0a6e73f";
 
 #[derive(Default)]
-struct RuntimeState {
+pub(crate) struct RuntimeState {
     signing_in: AtomicBool,
-    running_instances: Arc<Mutex<HashSet<String>>>,
+    pub(crate) running_instances: Arc<Mutex<HashSet<String>>>,
     console_logs: Arc<Mutex<HashMap<String, VecDeque<ConsoleLine>>>>,
     main_window_hidden: Arc<AtomicBool>,
 }
@@ -176,12 +179,16 @@ fn sign_out() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn create_instance(name: String, version: String) -> Result<instances::Instance, String> {
+async fn create_instance(
+    name: String,
+    version: String,
+    loader: modloaders::ModLoader,
+) -> Result<instances::Instance, String> {
     run_blocking(move || {
         let root = storage::user_data_dir()?;
         storage::prepare_storage(&root)?;
         let all = instances::load_all(&root)?;
-        instances::create(&root, &name, &version, &all)
+        instances::create(&root, &name, &version, loader, &all)
     })
     .await
 }
@@ -191,17 +198,27 @@ async fn update_instance(
     instance_id: String,
     name: String,
     version: String,
+    loader: modloaders::ModLoader,
     ram_mb: Option<u32>,
     jvm_args: Option<String>,
     game_args: Option<String>,
 ) -> Result<instances::Instance, String> {
     run_blocking(move || {
         let root = storage::user_data_dir()?;
+        let current = instances::load(&root, &instance_id)?;
+        if (current.version != version || current.loader != loader)
+            && modrinth::has_installed_mods(&root, &current)?
+        {
+            anyhow::bail!(
+                "Remove installed mods before changing the Minecraft version or mod loader"
+            );
+        }
         instances::update(
             &root,
             &instance_id,
             &name,
             &version,
+            loader,
             ram_mb,
             jvm_args,
             game_args,
@@ -540,6 +557,9 @@ async fn launch(
         let root = storage::user_data_dir()?;
         storage::prepare_storage(&root)?;
         let instance = instances::load(&root, &operation_instance_id)?;
+        if instance.loader.supports_mods() && version != instance.version {
+            anyhow::bail!("Edit the instance to change the Minecraft version of a modded profile");
+        }
         let (_, versions) = minecraft::load_versions(&root)?;
         let version_entry = versions
             .into_iter()
@@ -566,16 +586,32 @@ async fn launch(
             let _ = progress_app.emit("progress", value.clamp(0.0, 1.0));
             let _ = progress_app.emit("status", message);
         };
-        let child = minecraft::install_and_launch(
-            &root,
-            &instances::game_dir(&root, &instance),
-            &version_entry,
-            &auth,
-            &options,
-            &report,
-            &progress,
-        )?;
-        let updated = match instances::mark_launched(&root, &operation_instance_id, &version) {
+        let game_dir = instances::game_dir(&root, &instance);
+        let (child, installed_loader_version) = if instance.loader.supports_mods() {
+            let launched = modloaders::install_and_launch(
+                &root, &game_dir, &instance, &auth, &options, &report, &progress,
+            )?;
+            (launched.child, Some(launched.loader_version))
+        } else {
+            (
+                minecraft::install_and_launch(
+                    &root,
+                    &game_dir,
+                    &version_entry,
+                    &auth,
+                    &options,
+                    &report,
+                    &progress,
+                )?,
+                None,
+            )
+        };
+        let saved = if let Some(loader_version) = installed_loader_version {
+            instances::mark_modded_launched(&root, &operation_instance_id, &version, loader_version)
+        } else {
+            instances::mark_launched(&root, &operation_instance_id, &version)
+        };
+        let updated = match saved {
             Ok(instance) => instance,
             Err(error) => {
                 report(format!(
@@ -734,6 +770,12 @@ pub fn run() {
             get_system_accent,
             get_console_history,
             open_instance_console,
+            content_commands::list_instance_mods,
+            content_commands::search_modrinth,
+            content_commands::install_modrinth_mod,
+            content_commands::remove_modrinth_mod,
+            content_commands::update_modrinth_mod,
+            content_commands::update_all_modrinth_mods,
             launch,
         ])
         .setup(|app| {

@@ -3,6 +3,7 @@ import "@fortawesome/fontawesome-free/css/all.min.css";
 import { AnsiUp } from "ansi_up";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { createModsFeature } from "./mods.js";
 
 const app = document.querySelector("#app");
 const viewParams = new URLSearchParams(window.location.search);
@@ -89,6 +90,11 @@ const icons = {
   paste: "fa-solid fa-paste",
   select: "fa-solid fa-i-cursor",
   terminal: "fa-solid fa-terminal",
+  mods: "fa-solid fa-puzzle-piece",
+  refresh: "fa-solid fa-rotate",
+  download: "fa-solid fa-download",
+  warning: "fa-solid fa-triangle-exclamation",
+  back: "fa-solid fa-arrow-left",
 };
 
 function icon(name) {
@@ -116,6 +122,25 @@ function applyAccent(value) {
   document.documentElement.style.setProperty("--accent-rgb", `${red}, ${green}, ${blue}`);
   document.documentElement.style.setProperty("--accent-contrast", brightness > 155000 ? "#050505" : "#ffffff");
 }
+
+const modsFeature = createModsFeature({
+  invoke,
+  getInstance: activeInstance,
+  isRunning,
+  icon,
+  escapeHtml,
+  cleanError,
+  notify,
+  rerender: render,
+  setStatus: (message) => {
+    state.status = message;
+    updateStatusDom();
+  },
+  goBack: () => {
+    state.page = "library";
+    render();
+  },
+});
 
 function activeInstance() {
   return state.data?.instances.find((instance) => instance.id === state.activeId) || state.data?.instances[0];
@@ -166,6 +191,20 @@ function versionOptions(selected) {
     value: version.id,
     label: `${version.id}${version.kind === "snapshot" ? " · Snapshot" : ""}`,
   }));
+}
+
+function loaderOptions() {
+  return [
+    { value: "vanilla", label: "Vanilla" },
+    { value: "fabric", label: "Fabric" },
+    { value: "quilt", label: "Quilt" },
+    { value: "forge", label: "Forge" },
+    { value: "neoforge", label: "NeoForge" },
+  ];
+}
+
+function loaderLabel(value) {
+  return loaderOptions().find((loader) => loader.value === value)?.label || "Vanilla";
 }
 
 function launchBehaviorOptions() {
@@ -432,7 +471,7 @@ function shell(content) {
           <div class="sidebar-label"><span>Instances</span><button id="sidebar-add" class="mini-button" aria-label="Create instance">${icon("plus")}</button></div>
           <div class="instance-nav">
             ${state.data.instances.map((instance) => `
-              <button class="instance-nav-item ${instance.id === state.activeId && state.page === "library" ? "active" : ""}" data-instance="${escapeHtml(instance.id)}">
+              <button class="instance-nav-item ${instance.id === state.activeId && (state.page === "library" || state.page === "mods") ? "active" : ""}" data-instance="${escapeHtml(instance.id)}">
                 <span class="instance-symbol">${icon("instance")}</span>
                 <span class="instance-nav-copy"><strong>${escapeHtml(instance.name)}</strong><small>${isRunning(instance.id) ? "Running" : escapeHtml(instance.version)}</small></span>
                 ${isRunning(instance.id) ? `<span class="nav-running" title="Running"></span>` : ""}
@@ -494,12 +533,13 @@ function renderLibrary() {
           <div class="instance-heading"><h2>${escapeHtml(instance.name)}</h2><p>${running ? "Running" : escapeHtml(formatLastPlayed(instance.lastPlayed))}</p></div>
           <div class="instance-actions">
             ${running && state.data.settings.openConsole ? `<button id="open-console" class="icon-button" aria-label="Open game console" title="Open game console">${icon("terminal")}</button>` : ""}
+            ${instance.loader !== "vanilla" ? `<button id="manage-mods" class="icon-button" aria-label="Manage mods" title="Manage mods">${icon("mods")}</button>` : ""}
             <button id="open-instance" class="icon-button" aria-label="Open instance folder" title="Open instance folder">${icon("folder")}</button>
             <button id="edit-instance" class="icon-button" aria-label="Edit instance" title="Edit instance">${icon("edit")}</button>
           </div>
         </div>
         <div class="launch-controls">
-          <div class="version-field"><span>Version</span>${customSelect("launch-version", selectedVersion, versionOptions(selectedVersion), "Minecraft version")}</div>
+          ${instance.loader === "vanilla" ? `<div class="version-field"><span>Version</span>${customSelect("launch-version", selectedVersion, versionOptions(selectedVersion), "Minecraft version")}</div>` : `<div class="version-field fixed-version"><span>${escapeHtml(loaderLabel(instance.loader))}</span><strong>${escapeHtml(instance.version)}</strong></div>`}
           <button id="primary-action" class="button play-button ${running ? "running" : ""}" ${state.busy || running ? "disabled" : ""}>
             ${launching ? `<span class="spinner"></span><span><strong>Starting</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : running ? `${icon("check")}<span><strong>Running</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : `${icon(account ? "play" : "spark")}<span><strong>${account ? "Play" : "Add account"}</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>`}
           </button>
@@ -514,7 +554,7 @@ function renderLibrary() {
             return `
             <button class="instance-card ${item.id === instance.id ? "selected" : ""}" data-instance="${escapeHtml(item.id)}">
               <span class="instance-symbol card-symbol">${icon("instance")}</span>
-              <span class="card-copy"><strong>${escapeHtml(item.name)}</strong><small>Minecraft ${escapeHtml(item.version)}</small></span>
+              <span class="card-copy"><strong>${escapeHtml(item.name)}</strong><small>${item.loader !== "vanilla" ? `${escapeHtml(loaderLabel(item.loader))} · ` : ""}Minecraft ${escapeHtml(item.version)}</small></span>
               ${itemRunning ? `<span class="running-badge"><span></span>Running</span>` : ""}
               ${icon("chevron")}
             </button>`;
@@ -533,10 +573,11 @@ function renderContextMenu() {
     const running = isRunning(instance.id);
     return `
       <div class="context-menu" role="menu" aria-label="Actions for ${escapeHtml(instance.name)}" style="${position}">
-        <div class="context-title"><span class="instance-symbol">${icon("instance")}</span><span><strong>${escapeHtml(instance.name)}</strong><small>Minecraft ${escapeHtml(instance.version)}</small></span></div>
+        <div class="context-title"><span class="instance-symbol">${icon("instance")}</span><span><strong>${escapeHtml(instance.name)}</strong><small>${instance.loader !== "vanilla" ? `${escapeHtml(loaderLabel(instance.loader))} · ` : ""}Minecraft ${escapeHtml(instance.version)}</small></span></div>
         <div class="context-separator"></div>
         <button class="context-action" role="menuitem" data-context-action="play" ${running ? "disabled" : ""}>${icon(running ? "check" : "play")}<span>${running ? "Already running" : "Play"}</span></button>
         <button class="context-action" role="menuitem" data-context-action="edit">${icon("edit")}<span>Edit</span></button>
+        ${instance.loader !== "vanilla" ? `<button class="context-action" role="menuitem" data-context-action="mods">${icon("mods")}<span>Manage mods</span></button>` : ""}
         <button class="context-action" role="menuitem" data-context-action="folder">${icon("folder")}<span>Open folder</span></button>
         ${running && state.data.settings.openConsole ? `<button class="context-action" role="menuitem" data-context-action="console">${icon("terminal")}<span>Open console</span></button>` : ""}
         <div class="context-separator"></div>
@@ -611,6 +652,7 @@ function renderModal() {
         <form id="instance-form">
           <label class="field"><span>Name</span><input id="instance-name" maxlength="48" value="${editing ? escapeHtml(instance.name) : "New instance"}" required autofocus /></label>
           <div class="field"><span>Minecraft version</span>${customSelect("instance-version", selected, versionOptions(selected), "Minecraft version")}</div>
+          <div class="field"><span>Mod loader</span>${customSelect("instance-loader", editing ? instance.loader : "vanilla", loaderOptions(), "Mod loader")}</div>
           ${editing ? `
             <label class="setting-row inline-setting"><span><strong>Custom memory</strong></span><input id="override-ram" class="switch" type="checkbox" ${instance.ramMb ? "checked" : ""} /></label>
             <label id="instance-ram-wrap" class="field ${instance.ramMb ? "" : "disabled"}"><span>Memory <output id="instance-ram-output">${((instance.ramMb || state.data.settings.ramMb) / 1024).toFixed(1)} GB</output></span><input id="instance-ram" type="range" min="1024" max="16384" step="512" value="${instance.ramMb || state.data.settings.ramMb}" ${instance.ramMb ? "" : "disabled"} /></label>
@@ -627,13 +669,19 @@ function render() {
     app.innerHTML = `<div class="boot"><div><strong>Wisdom</strong><span>${escapeHtml(state.status)}</span></div><span class="boot-line"></span></div>`;
     return;
   }
-  const content = state.page === "settings" ? renderSettings() : renderLibrary();
+  if (state.page === "mods" && activeInstance()?.loader === "vanilla") state.page = "library";
+  const content = state.page === "settings"
+    ? renderSettings()
+    : state.page === "mods" && activeInstance()
+      ? modsFeature.render(activeInstance())
+      : renderLibrary();
   app.innerHTML = shell(content);
   bindEvents();
 }
 
 function bindEvents() {
   bindCustomSelects();
+  if (state.page === "mods") modsFeature.bind();
   document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => {
     state.page = button.dataset.page;
     state.modal = null;
@@ -659,6 +707,7 @@ function bindEvents() {
   document.querySelector("#confirm-delete")?.addEventListener("click", deleteInstance);
   document.querySelector("#open-instance")?.addEventListener("click", () => callSimple("open_instance_folder", { instanceId: activeInstance().id }, "Instance folder opened."));
   document.querySelector("#open-console")?.addEventListener("click", () => invoke("open_instance_console", { instanceId: activeInstance().id }).catch((error) => fail("Could not open console", error)));
+  document.querySelector("#manage-mods")?.addEventListener("click", openMods);
   document.querySelector("#open-data")?.addEventListener("click", () => callSimple("open_data_folder", {}, "Data folder opened."));
   document.querySelector("#signin")?.addEventListener("click", login);
   document.querySelector("#account-trigger")?.addEventListener("click", () => {
@@ -865,6 +914,8 @@ async function handleContextAction(event) {
   } else if (action === "folder") {
     render();
     callSimple("open_instance_folder", { instanceId: instance.id }, "Instance folder opened.");
+  } else if (action === "mods") {
+    openMods();
   } else if (action === "console") {
     render();
     invoke("open_instance_console", { instanceId: instance.id }).catch((error) => fail("Could not open console", error));
@@ -873,6 +924,16 @@ async function handleContextAction(event) {
     render();
     state.data.account ? launch() : login();
   }
+}
+
+function openMods() {
+  const instance = activeInstance();
+  if (!instance || instance.loader === "vanilla") return;
+  state.page = "mods";
+  state.modal = null;
+  state.accountMenu = false;
+  render();
+  modsFeature.open();
 }
 
 function updateRamOutput(event) {
@@ -958,6 +1019,7 @@ async function saveInstance(event) {
   const editing = state.modal === "edit";
   const name = document.querySelector("#instance-name").value.trim();
   const version = document.querySelector("#instance-version").value;
+  const loader = document.querySelector("#instance-loader").value;
   if (!name) return;
   state.busy = "save";
   try {
@@ -968,6 +1030,7 @@ async function saveInstance(event) {
         instanceId: activeInstance().id,
         name,
         version,
+        loader,
         ramMb: overrideRam ? Number(document.querySelector("#instance-ram").value) : null,
         jvmArgs: document.querySelector("#instance-jvm").value || null,
         gameArgs: document.querySelector("#instance-game").value || null,
@@ -976,7 +1039,7 @@ async function saveInstance(event) {
       state.data.instances[index] = instance;
       notify("Instance saved.", "success");
     } else {
-      instance = await invoke("create_instance", { name, version });
+      instance = await invoke("create_instance", { name, version, loader });
       state.data.instances.push(instance);
       state.activeId = instance.id;
       notify("Instance created.", "success");
@@ -1352,7 +1415,7 @@ async function init() {
         state.status = instance ? `${instance.name} exited.` : "Minecraft exited.";
         state.progress = 0;
       }
-      if (state.page === "library" && !state.modal) render();
+      if ((state.page === "library" || state.page === "mods") && !state.modal) render();
       else updateStatusDom();
     });
     state.data = await invoke("load_launcher");

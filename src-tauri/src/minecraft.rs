@@ -735,7 +735,7 @@ fn replace_file(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn parse_extra_arguments(input: &str) -> Result<Vec<String>> {
+pub(crate) fn parse_extra_arguments(input: &str) -> Result<Vec<String>> {
     let mut arguments = Vec::new();
     let mut current = String::new();
     let mut quoted = false;

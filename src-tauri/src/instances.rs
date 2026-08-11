@@ -1,3 +1,4 @@
+use crate::modloaders::ModLoader;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,10 @@ pub struct Instance {
     pub id: String,
     pub name: String,
     pub version: String,
+    #[serde(default)]
+    pub loader: ModLoader,
+    #[serde(default, alias = "loader_version")]
+    pub loader_version: Option<String>,
     #[serde(default, alias = "ram_mb")]
     pub ram_mb: Option<u32>,
     #[serde(default, alias = "jvm_args")]
@@ -49,7 +54,13 @@ pub fn load_all(root: &Path) -> Result<Vec<Instance>> {
     Ok(instances)
 }
 
-pub fn create(root: &Path, name: &str, version: &str, existing: &[Instance]) -> Result<Instance> {
+pub fn create(
+    root: &Path,
+    name: &str,
+    version: &str,
+    loader: ModLoader,
+    existing: &[Instance],
+) -> Result<Instance> {
     let name = clean_name(name)?;
     let base_id = slug(&name);
     let mut id = base_id.clone();
@@ -64,6 +75,8 @@ pub fn create(root: &Path, name: &str, version: &str, existing: &[Instance]) -> 
         id,
         name,
         version: validate_version(version)?,
+        loader,
+        loader_version: None,
         ram_mb: None,
         jvm_args: None,
         game_args: None,
@@ -78,13 +91,19 @@ pub fn update(
     id: &str,
     name: &str,
     version: &str,
+    loader: ModLoader,
     ram_mb: Option<u32>,
     jvm_args: Option<String>,
     game_args: Option<String>,
 ) -> Result<Instance> {
     let mut instance = load(root, id)?;
     instance.name = clean_name(name)?;
-    instance.version = validate_version(version)?;
+    let version = validate_version(version)?;
+    if instance.version != version || instance.loader != loader {
+        instance.loader_version = None;
+    }
+    instance.version = version;
+    instance.loader = loader;
     instance.ram_mb = ram_mb.map(|value| value.clamp(512, 65_536));
     instance.jvm_args = normalize_optional(jvm_args);
     instance.game_args = normalize_optional(game_args);
@@ -95,6 +114,20 @@ pub fn update(
 pub fn mark_launched(root: &Path, id: &str, version: &str) -> Result<Instance> {
     let mut instance = load(root, id)?;
     instance.version = validate_version(version)?;
+    instance.last_played = Some(Utc::now());
+    save(root, &instance)?;
+    Ok(instance)
+}
+
+pub fn mark_modded_launched(
+    root: &Path,
+    id: &str,
+    version: &str,
+    loader_version: String,
+) -> Result<Instance> {
+    let mut instance = load(root, id)?;
+    instance.version = validate_version(version)?;
+    instance.loader_version = Some(loader_version);
     instance.last_played = Some(Utc::now());
     save(root, &instance)?;
     Ok(instance)

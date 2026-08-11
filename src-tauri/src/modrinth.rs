@@ -1,0 +1,813 @@
+use crate::instances::{self, Instance};
+use crate::storage::http;
+use anyhow::{Context, Result, bail};
+use reqwest::blocking::Client;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha512};
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+
+const API_BASE: &str = "https://api.modrinth.com/v2";
+const MANIFEST_VERSION: u32 = 1;
+const MAX_MOD_SIZE: u64 = 1_073_741_824;
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResults {
+    pub hits: Vec<SearchHit>,
+    pub offset: usize,
+    pub total_hits: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub project_id: String,
+    pub title: String,
+    pub description: String,
+    pub author: String,
+    pub icon_url: Option<String>,
+    pub downloads: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledModView {
+    pub project_id: String,
+    pub title: String,
+    pub version_number: String,
+    pub icon_url: Option<String>,
+    pub explicit: bool,
+    pub compatible: bool,
+    pub missing: bool,
+    pub update_available: bool,
+    pub latest_version_number: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContentManifest {
+    #[serde(default = "manifest_version")]
+    schema_version: u32,
+    #[serde(default)]
+    mods: Vec<InstalledMod>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstalledMod {
+    project_id: String,
+    version_id: String,
+    title: String,
+    version_number: String,
+    file_name: String,
+    sha1: String,
+    sha512: String,
+    #[serde(default)]
+    icon_url: Option<String>,
+    #[serde(default)]
+    explicit: bool,
+    #[serde(default)]
+    dependencies: Vec<String>,
+    #[serde(default)]
+    game_versions: Vec<String>,
+    #[serde(default)]
+    loaders: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiSearchResults {
+    hits: Vec<ApiSearchHit>,
+    offset: usize,
+    total_hits: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiSearchHit {
+    project_id: String,
+    title: String,
+    description: String,
+    author: String,
+    icon_url: Option<String>,
+    downloads: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiProject {
+    id: String,
+    title: String,
+    icon_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ApiVersion {
+    id: String,
+    project_id: String,
+    version_number: String,
+    version_type: String,
+    #[serde(default)]
+    dependencies: Vec<ApiDependency>,
+    #[serde(default)]
+    game_versions: Vec<String>,
+    #[serde(default)]
+    loaders: Vec<String>,
+    files: Vec<ApiFile>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ApiDependency {
+    version_id: Option<String>,
+    project_id: Option<String>,
+    file_name: Option<String>,
+    dependency_type: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ApiFile {
+    hashes: HashMap<String, String>,
+    url: String,
+    filename: String,
+    primary: bool,
+    size: u64,
+    #[serde(default)]
+    file_type: Option<String>,
+}
+
+#[derive(Serialize)]
+struct UpdateRequest<'a> {
+    hashes: Vec<&'a str>,
+    algorithm: &'static str,
+    loaders: [&'a str; 1],
+    game_versions: [&'a str; 1],
+}
+
+fn manifest_version() -> u32 {
+    MANIFEST_VERSION
+}
+
+pub fn has_installed_mods(root: &Path, instance: &Instance) -> Result<bool> {
+    Ok(!load_manifest(root, instance)?.mods.is_empty())
+}
+
+pub fn search(root: &Path, instance_id: &str, query: &str, offset: usize) -> Result<SearchResults> {
+    let instance = instances::load(root, instance_id)?;
+    let loader = require_loader(&instance)?;
+    let query = query.trim();
+    if query.chars().count() > 100 {
+        bail!("Search query is too long");
+    }
+    let facets = serde_json::to_string(&[
+        [format!("categories:{loader}")],
+        [format!("versions:{}", instance.version)],
+        ["project_type:mod".to_owned()],
+    ])?;
+    let response: ApiSearchResults = http()?
+        .get(format!("{API_BASE}/search"))
+        .query(&[
+            ("query", query.to_owned()),
+            ("facets", facets),
+            ("index", "relevance".to_owned()),
+            ("offset", offset.min(10_000).to_string()),
+            ("limit", "24".to_owned()),
+        ])
+        .send()?
+        .error_for_status()?
+        .json()?;
+    Ok(SearchResults {
+        hits: response
+            .hits
+            .into_iter()
+            .map(|hit| SearchHit {
+                project_id: hit.project_id,
+                title: hit.title,
+                description: hit.description,
+                author: hit.author,
+                icon_url: safe_icon_url(hit.icon_url),
+                downloads: hit.downloads,
+            })
+            .collect(),
+        offset: response.offset,
+        total_hits: response.total_hits,
+    })
+}
+
+pub fn list_installed(
+    root: &Path,
+    instance_id: &str,
+    refresh_updates: bool,
+) -> Result<Vec<InstalledModView>> {
+    let instance = instances::load(root, instance_id)?;
+    let loader = require_loader(&instance)?;
+    let manifest = load_manifest(root, &instance)?;
+    let updates = if refresh_updates {
+        // Installed content must remain usable offline; update discovery is best-effort.
+        fetch_updates(&manifest, loader, &instance.version).unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+    let mods_dir = mods_dir(root, &instance);
+    let mut result = manifest
+        .mods
+        .iter()
+        .map(|installed| {
+            let update = updates.get(&installed.sha512);
+            InstalledModView {
+                project_id: installed.project_id.clone(),
+                title: installed.title.clone(),
+                version_number: installed.version_number.clone(),
+                icon_url: safe_icon_url(installed.icon_url.clone()),
+                explicit: installed.explicit,
+                compatible: installed
+                    .game_versions
+                    .iter()
+                    .any(|version| version == &instance.version)
+                    && installed.loaders.iter().any(|value| value == loader),
+                missing: managed_file_is_missing_or_modified(&mods_dir, installed),
+                update_available: update.is_some_and(|value| value.id != installed.version_id),
+                latest_version_number: update
+                    .filter(|value| value.id != installed.version_id)
+                    .map(|value| value.version_number.clone()),
+            }
+        })
+        .collect::<Vec<_>>();
+    result.sort_by(|left, right| {
+        right
+            .explicit
+            .cmp(&left.explicit)
+            .then_with(|| left.title.to_lowercase().cmp(&right.title.to_lowercase()))
+    });
+    Ok(result)
+}
+
+pub fn install(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<InstalledModView>> {
+    validate_project_id(project_id)?;
+    let instance = instances::load(root, instance_id)?;
+    let loader = require_loader(&instance)?;
+    let client = http()?;
+    let mut manifest = load_manifest(root, &instance)?;
+    let mut resolving = HashSet::new();
+    let result = install_project(
+        &client,
+        root,
+        &instance,
+        loader,
+        project_id,
+        None,
+        true,
+        &mut manifest,
+        &mut resolving,
+    );
+    if let Err(error) = result {
+        garbage_collect(root, &instance, &mut manifest)?;
+        save_manifest(root, &instance, &manifest)?;
+        return Err(error);
+    }
+    save_manifest(root, &instance, &manifest)?;
+    list_installed(root, instance_id, true)
+}
+
+pub fn remove(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<InstalledModView>> {
+    validate_project_id(project_id)?;
+    let instance = instances::load(root, instance_id)?;
+    require_loader(&instance)?;
+    let mut manifest = load_manifest(root, &instance)?;
+    let Some(item) = manifest
+        .mods
+        .iter_mut()
+        .find(|item| item.project_id == project_id)
+    else {
+        bail!("Mod is not installed");
+    };
+    item.explicit = false;
+    garbage_collect(root, &instance, &mut manifest)?;
+    save_manifest(root, &instance, &manifest)?;
+    list_installed(root, instance_id, true)
+}
+
+pub fn update(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<InstalledModView>> {
+    validate_project_id(project_id)?;
+    let instance = instances::load(root, instance_id)?;
+    let loader = require_loader(&instance)?;
+    let client = http()?;
+    let mut manifest = load_manifest(root, &instance)?;
+    let explicit = manifest
+        .mods
+        .iter()
+        .find(|item| item.project_id == project_id)
+        .context("Mod is not installed")?
+        .explicit;
+    let mut resolving = HashSet::new();
+    install_project(
+        &client,
+        root,
+        &instance,
+        loader,
+        project_id,
+        None,
+        explicit,
+        &mut manifest,
+        &mut resolving,
+    )?;
+    garbage_collect(root, &instance, &mut manifest)?;
+    save_manifest(root, &instance, &manifest)?;
+    list_installed(root, instance_id, true)
+}
+
+pub fn update_all(root: &Path, instance_id: &str) -> Result<Vec<InstalledModView>> {
+    let instance = instances::load(root, instance_id)?;
+    let loader = require_loader(&instance)?;
+    let client = http()?;
+    let mut manifest = load_manifest(root, &instance)?;
+    let projects = manifest
+        .mods
+        .iter()
+        .filter(|item| item.explicit)
+        .map(|item| item.project_id.clone())
+        .collect::<Vec<_>>();
+    for project_id in projects {
+        let mut resolving = HashSet::new();
+        install_project(
+            &client,
+            root,
+            &instance,
+            loader,
+            &project_id,
+            None,
+            true,
+            &mut manifest,
+            &mut resolving,
+        )?;
+    }
+    garbage_collect(root, &instance, &mut manifest)?;
+    save_manifest(root, &instance, &manifest)?;
+    list_installed(root, instance_id, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_project(
+    client: &Client,
+    root: &Path,
+    instance: &Instance,
+    loader: &str,
+    project_id: &str,
+    exact_version: Option<&str>,
+    explicit: bool,
+    manifest: &mut ContentManifest,
+    resolving: &mut HashSet<String>,
+) -> Result<()> {
+    validate_project_id(project_id)?;
+    if !resolving.insert(project_id.to_owned()) {
+        return Ok(());
+    }
+
+    let version = match exact_version {
+        Some(version_id) => fetch_version(client, version_id)?,
+        None => fetch_latest_version(client, project_id, loader, &instance.version)?,
+    };
+    if version.project_id != project_id {
+        bail!("Modrinth returned a version for the wrong project");
+    }
+    ensure_compatible(&version, loader, &instance.version)?;
+    let project = fetch_project(client, project_id)?;
+    let mut dependencies = Vec::new();
+    for dependency in version
+        .dependencies
+        .iter()
+        .filter(|dependency| dependency.dependency_type == "required")
+    {
+        let (dependency_project, dependency_version) = match (
+            dependency.project_id.as_deref(),
+            dependency.version_id.as_deref(),
+        ) {
+            (Some(project), version) => (project.to_owned(), version.map(str::to_owned)),
+            (None, Some(version_id)) => {
+                let dependency_version = fetch_version(client, version_id)?;
+                (dependency_version.project_id, Some(version_id.to_owned()))
+            }
+            (None, None) => {
+                bail!(
+                    "{} requires an external dependency that cannot be downloaded automatically{}",
+                    project.title,
+                    dependency
+                        .file_name
+                        .as_deref()
+                        .map(|name| format!(": {name}"))
+                        .unwrap_or_default()
+                )
+            }
+        };
+        validate_project_id(&dependency_project)?;
+        dependencies.push(dependency_project.clone());
+        install_project(
+            client,
+            root,
+            instance,
+            loader,
+            &dependency_project,
+            dependency_version.as_deref(),
+            false,
+            manifest,
+            resolving,
+        )?;
+    }
+
+    let file = select_file(&version)?;
+    let sha1 = file
+        .hashes
+        .get("sha1")
+        .cloned()
+        .context("Modrinth file has no SHA-1 hash")?;
+    let sha512 = file
+        .hashes
+        .get("sha512")
+        .cloned()
+        .context("Modrinth file has no SHA-512 hash")?;
+    let file_name = unique_file_name(manifest, project_id, &safe_jar_name(&file.filename)?);
+    let directory = mods_dir(root, instance);
+    fs::create_dir_all(&directory)?;
+    let destination = directory.join(&file_name);
+    if !destination.is_file() || sha512_file(&destination)? != sha512 {
+        download_mod(client, file, &destination, &sha512)?;
+    }
+
+    let previous = manifest
+        .mods
+        .iter()
+        .find(|item| item.project_id == project_id)
+        .cloned();
+    let installed = InstalledMod {
+        project_id: project.id,
+        version_id: version.id,
+        title: project.title,
+        version_number: version.version_number,
+        file_name: file_name.clone(),
+        sha1,
+        sha512,
+        icon_url: safe_icon_url(project.icon_url),
+        explicit: previous.as_ref().is_some_and(|item| item.explicit) || explicit,
+        dependencies,
+        game_versions: version.game_versions,
+        loaders: version.loaders,
+    };
+    if let Some(index) = manifest
+        .mods
+        .iter()
+        .position(|item| item.project_id == project_id)
+    {
+        manifest.mods[index] = installed;
+    } else {
+        manifest.mods.push(installed);
+    }
+    if let Some(previous) = previous
+        && previous.file_name != file_name
+    {
+        remove_managed_file(&directory, &previous.file_name)?;
+    }
+    save_manifest(root, instance, manifest)?;
+    resolving.remove(project_id);
+    Ok(())
+}
+
+fn fetch_project(client: &Client, project_id: &str) -> Result<ApiProject> {
+    Ok(client
+        .get(format!("{API_BASE}/project/{project_id}"))
+        .send()?
+        .error_for_status()?
+        .json()?)
+}
+
+fn fetch_version(client: &Client, version_id: &str) -> Result<ApiVersion> {
+    validate_project_id(version_id)?;
+    Ok(client
+        .get(format!("{API_BASE}/version/{version_id}"))
+        .send()?
+        .error_for_status()?
+        .json()?)
+}
+
+fn fetch_latest_version(
+    client: &Client,
+    project_id: &str,
+    loader: &str,
+    game_version: &str,
+) -> Result<ApiVersion> {
+    let loaders = serde_json::to_string(&[loader])?;
+    let game_versions = serde_json::to_string(&[game_version])?;
+    let versions: Vec<ApiVersion> = client
+        .get(format!("{API_BASE}/project/{project_id}/version"))
+        .query(&[
+            ("loaders", loaders),
+            ("game_versions", game_versions),
+            ("include_changelog", "false".to_owned()),
+        ])
+        .send()?
+        .error_for_status()?
+        .json()?;
+    versions
+        .iter()
+        .find(|version| version.version_type == "release")
+        .or_else(|| versions.first())
+        .cloned()
+        .with_context(|| {
+            format!("No compatible {loader} version is available for Minecraft {game_version}")
+        })
+}
+
+fn fetch_updates(
+    manifest: &ContentManifest,
+    loader: &str,
+    game_version: &str,
+) -> Result<HashMap<String, ApiVersion>> {
+    let hashes = manifest
+        .mods
+        .iter()
+        .filter(|item| !item.sha512.is_empty())
+        .map(|item| item.sha512.as_str())
+        .collect::<Vec<_>>();
+    if hashes.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let response: HashMap<String, Option<ApiVersion>> = http()?
+        .post(format!("{API_BASE}/version_files/update"))
+        .json(&UpdateRequest {
+            hashes,
+            algorithm: "sha512",
+            loaders: [loader],
+            game_versions: [game_version],
+        })
+        .send()?
+        .error_for_status()?
+        .json()?;
+    Ok(response
+        .into_iter()
+        .filter_map(|(hash, version)| version.map(|version| (hash, version)))
+        .collect())
+}
+
+fn ensure_compatible(version: &ApiVersion, loader: &str, game_version: &str) -> Result<()> {
+    if !version.loaders.iter().any(|value| value == loader)
+        || !version
+            .game_versions
+            .iter()
+            .any(|value| value == game_version)
+    {
+        bail!(
+            "The selected mod version is not compatible with {loader} on Minecraft {game_version}"
+        );
+    }
+    Ok(())
+}
+
+fn select_file(version: &ApiVersion) -> Result<&ApiFile> {
+    version
+        .files
+        .iter()
+        .find(|file| file.primary && is_installable_jar(file))
+        .or_else(|| version.files.iter().find(|file| is_installable_jar(file)))
+        .context("The compatible Modrinth version has no installable JAR file")
+}
+
+fn is_installable_jar(file: &ApiFile) -> bool {
+    file.filename.to_ascii_lowercase().ends_with(".jar")
+        && !matches!(
+            file.file_type.as_deref(),
+            Some("sources-jar" | "dev-jar" | "javadoc-jar" | "signature")
+        )
+}
+
+fn download_mod(client: &Client, file: &ApiFile, destination: &Path, expected: &str) -> Result<()> {
+    if file.size > MAX_MOD_SIZE {
+        bail!("Mod file is unexpectedly large");
+    }
+    let url = reqwest::Url::parse(&file.url)?;
+    if url.scheme() != "https" {
+        bail!("Mod download must use HTTPS");
+    }
+    let mut response = client.get(url).send()?.error_for_status()?;
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_MOD_SIZE)
+    {
+        bail!("Mod download is unexpectedly large");
+    }
+    let temporary = destination.with_extension("download");
+    let mut output = File::create(&temporary)?;
+    let mut hasher = Sha512::new();
+    let mut received = 0u64;
+    let mut buffer = [0u8; 131_072];
+    loop {
+        let count = response.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        received += count as u64;
+        if received > MAX_MOD_SIZE {
+            let _ = fs::remove_file(&temporary);
+            bail!("Mod download exceeded the size limit");
+        }
+        output.write_all(&buffer[..count])?;
+        hasher.update(&buffer[..count]);
+    }
+    output.flush()?;
+    let actual = format!("{:x}", hasher.finalize());
+    if !actual.eq_ignore_ascii_case(expected) {
+        fs::remove_file(&temporary)?;
+        bail!("Downloaded mod checksum does not match");
+    }
+    if destination.exists() {
+        fs::remove_file(destination)?;
+    }
+    fs::rename(temporary, destination)?;
+    Ok(())
+}
+
+fn garbage_collect(root: &Path, instance: &Instance, manifest: &mut ContentManifest) -> Result<()> {
+    loop {
+        let referenced = manifest
+            .mods
+            .iter()
+            .flat_map(|item| item.dependencies.iter().cloned())
+            .collect::<HashSet<_>>();
+        let removable = manifest
+            .mods
+            .iter()
+            .filter(|item| !item.explicit && !referenced.contains(&item.project_id))
+            .map(|item| item.project_id.clone())
+            .collect::<HashSet<_>>();
+        if removable.is_empty() {
+            break;
+        }
+        let directory = mods_dir(root, instance);
+        for item in manifest
+            .mods
+            .iter()
+            .filter(|item| removable.contains(&item.project_id))
+        {
+            remove_managed_file(&directory, &item.file_name)?;
+        }
+        manifest
+            .mods
+            .retain(|item| !removable.contains(&item.project_id));
+    }
+    Ok(())
+}
+
+fn remove_managed_file(directory: &Path, file_name: &str) -> Result<()> {
+    let safe = safe_jar_name(file_name)?;
+    let path = directory.join(safe);
+    if path.parent() != Some(directory) {
+        bail!("Invalid managed mod path");
+    }
+    if path.exists() {
+        fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn load_manifest(root: &Path, instance: &Instance) -> Result<ContentManifest> {
+    let path = manifest_path(root, instance);
+    let manifest = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<ContentManifest>(&bytes)
+            .context("The managed mod list is corrupted")?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ContentManifest {
+            schema_version: MANIFEST_VERSION,
+            mods: Vec::new(),
+        },
+        Err(error) => return Err(error.into()),
+    };
+    if manifest.schema_version != MANIFEST_VERSION {
+        bail!("The managed mod list uses an unsupported format");
+    }
+    Ok(manifest)
+}
+
+fn save_manifest(root: &Path, instance: &Instance, manifest: &ContentManifest) -> Result<()> {
+    let path = manifest_path(root, instance);
+    fs::create_dir_all(path.parent().context("Manifest path has no parent")?)?;
+    let temporary = path.with_extension("tmp");
+    fs::write(&temporary, serde_json::to_vec_pretty(manifest)?)?;
+    if path.exists() {
+        fs::remove_file(&path)?;
+    }
+    fs::rename(temporary, path)?;
+    Ok(())
+}
+
+fn manifest_path(root: &Path, instance: &Instance) -> PathBuf {
+    instances::game_dir(root, instance)
+        .join(".wisdom")
+        .join("mods.json")
+}
+
+fn mods_dir(root: &Path, instance: &Instance) -> PathBuf {
+    instances::game_dir(root, instance).join("mods")
+}
+
+fn require_loader(instance: &Instance) -> Result<&'static str> {
+    instance
+        .loader
+        .modrinth_name()
+        .context("Select a mod loader before managing mods")
+}
+
+fn validate_project_id(value: &str) -> Result<()> {
+    if value.len() < 3
+        || value.len() > 64
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+    {
+        bail!("Invalid Modrinth project ID");
+    }
+    Ok(())
+}
+
+fn safe_jar_name(value: &str) -> Result<String> {
+    let path = Path::new(value);
+    if path.file_name() != Some(OsStr::new(value))
+        || !value.to_ascii_lowercase().ends_with(".jar")
+        || value.chars().any(char::is_control)
+    {
+        bail!("Modrinth returned an unsafe mod filename");
+    }
+    Ok(value.to_owned())
+}
+
+fn unique_file_name(manifest: &ContentManifest, project_id: &str, file_name: &str) -> String {
+    if manifest
+        .mods
+        .iter()
+        .all(|item| item.project_id == project_id || item.file_name != file_name)
+    {
+        file_name.to_owned()
+    } else {
+        format!("{project_id}-{file_name}")
+    }
+}
+
+fn safe_icon_url(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let url = reqwest::Url::parse(&value).ok()?;
+        (url.scheme() == "https"
+            && url
+                .host_str()
+                .is_some_and(|host| host == "cdn.modrinth.com" || host.ends_with(".modrinth.com")))
+        .then_some(value)
+    })
+}
+
+fn managed_file_is_missing_or_modified(directory: &Path, installed: &InstalledMod) -> bool {
+    let path = directory.join(&installed.file_name);
+    !path.is_file()
+        || sha512_file(&path)
+            .map(|actual| !actual.eq_ignore_ascii_case(&installed.sha512))
+            .unwrap_or(true)
+}
+
+fn sha512_file(path: &Path) -> Result<String> {
+    let mut input = File::open(path)?;
+    let mut hasher = Sha512::new();
+    let mut buffer = [0u8; 131_072];
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unsafe_mod_names() {
+        assert!(safe_jar_name("sodium.jar").is_ok());
+        assert!(safe_jar_name("../sodium.jar").is_err());
+        assert!(safe_jar_name("readme.txt").is_err());
+    }
+
+    #[test]
+    fn accepts_only_stable_project_ids() {
+        assert!(validate_project_id("AABBCCDD").is_ok());
+        assert!(validate_project_id("bad/slug").is_err());
+    }
+
+    #[test]
+    fn ignores_non_runtime_jars() {
+        let file = ApiFile {
+            hashes: HashMap::new(),
+            url: "https://cdn.modrinth.com/example.jar".to_owned(),
+            filename: "example-sources.jar".to_owned(),
+            primary: false,
+            size: 1,
+            file_type: Some("sources-jar".to_owned()),
+        };
+        assert!(!is_installable_jar(&file));
+    }
+}

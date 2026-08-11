@@ -332,6 +332,8 @@ button, input[type="range"], input[type="checkbox"] { cursor: pointer; }
 .version-field .custom-select { margin-top: 2px; }
 .version-field .select-trigger { height: 27px; padding: 0; border: 0; background: transparent; font-size: 12px; font-weight: 580; }
 .version-field .select-trigger:hover, .version-field .custom-select.open .select-trigger { background: transparent; }
+.fixed-version { justify-content: center; cursor: default; }
+.fixed-version strong { margin-top: 3px; color: var(--text); font-size: 12px; font-weight: 580; letter-spacing: 0; text-transform: none; }
 
 .custom-select { position: relative; width: 100%; min-width: 0; color: var(--text); text-transform: none; letter-spacing: 0; }
 .select-trigger {
