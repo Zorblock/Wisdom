@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -424,12 +424,13 @@ pub fn install_and_launch(
             game.env("PATH", path);
         }
     }
-    #[cfg(windows)]
-    game.creation_flags(if options.open_console {
-        0x0000_0010
+    if options.open_console {
+        game.stdout(Stdio::piped()).stderr(Stdio::piped());
     } else {
-        0x0800_0000
-    });
+        game.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    #[cfg(windows)]
+    game.creation_flags(0x0800_0000);
     game.spawn().context("Could not start Java")
 }
 

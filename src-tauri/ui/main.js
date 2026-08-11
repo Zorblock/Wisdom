@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 const app = document.querySelector("#app");
+const viewParams = new URLSearchParams(window.location.search);
+const isConsoleView = viewParams.get("console") === "1";
 const customSelectOptionSets = new Map();
 const SELECT_ROW_HEIGHT = 34;
 const SELECT_OVERSCAN = 5;
@@ -82,6 +84,7 @@ const icons = {
   cut: "fa-solid fa-scissors",
   paste: "fa-solid fa-paste",
   select: "fa-solid fa-i-cursor",
+  terminal: "fa-solid fa-terminal",
 };
 
 function icon(name) {
@@ -478,6 +481,7 @@ function renderLibrary() {
         <div class="instance-summary">
           <div class="instance-heading"><h2>${escapeHtml(instance.name)}</h2><p>${running ? "Running" : escapeHtml(formatLastPlayed(instance.lastPlayed))}</p></div>
           <div class="instance-actions">
+            ${running && state.data.settings.openConsole ? `<button id="open-console" class="icon-button" aria-label="Open game console" title="Open game console">${icon("terminal")}</button>` : ""}
             <button id="open-instance" class="icon-button" aria-label="Open instance folder" title="Open instance folder">${icon("folder")}</button>
             <button id="edit-instance" class="icon-button" aria-label="Edit instance" title="Edit instance">${icon("edit")}</button>
           </div>
@@ -522,6 +526,7 @@ function renderContextMenu() {
         <button class="context-action" role="menuitem" data-context-action="play" ${running ? "disabled" : ""}>${icon(running ? "check" : "play")}<span>${running ? "Already running" : "Play"}</span></button>
         <button class="context-action" role="menuitem" data-context-action="edit">${icon("edit")}<span>Edit</span></button>
         <button class="context-action" role="menuitem" data-context-action="folder">${icon("folder")}<span>Open folder</span></button>
+        ${running && state.data.settings.openConsole ? `<button class="context-action" role="menuitem" data-context-action="console">${icon("terminal")}<span>Open console</span></button>` : ""}
         <div class="context-separator"></div>
         <button class="context-action danger-action" role="menuitem" data-context-action="delete" ${running ? "disabled" : ""} title="${running ? "A running instance cannot be deleted" : "Delete instance permanently"}">${icon("trash")}<span>${running ? "Currently running" : "Delete instance"}</span></button>
       </div>`;
@@ -559,7 +564,7 @@ function renderSettings() {
         <div class="settings-card">
           <label class="setting-row range-row"><span><strong>Memory</strong></span><span class="range-control"><output id="ram-output">${ramGb} GB</output><input id="ram" type="range" min="1024" max="16384" step="512" value="${settings.ramMb}" /></span></label>
           <label class="setting-row"><span><strong>Show snapshots</strong></span><input id="snapshots" class="switch" type="checkbox" ${settings.showSnapshots ? "checked" : ""} /></label>
-          <label class="setting-row"><span><strong>Open Java console</strong></span><input id="console" class="switch" type="checkbox" ${settings.openConsole ? "checked" : ""} /></label>
+          <label class="setting-row"><span><strong>Open game console</strong></span><input id="console" class="switch" type="checkbox" ${settings.openConsole ? "checked" : ""} /></label>
         </div>
       </section>
       <section class="settings-group">
@@ -639,6 +644,7 @@ function bindEvents() {
   document.querySelector("#delete-instance")?.addEventListener("click", () => openModal("delete"));
   document.querySelector("#confirm-delete")?.addEventListener("click", deleteInstance);
   document.querySelector("#open-instance")?.addEventListener("click", () => callSimple("open_instance_folder", { instanceId: activeInstance().id }, "Instance folder opened."));
+  document.querySelector("#open-console")?.addEventListener("click", () => invoke("open_instance_console", { instanceId: activeInstance().id }).catch((error) => fail("Could not open console", error)));
   document.querySelector("#open-data")?.addEventListener("click", () => callSimple("open_data_folder", {}, "Data folder opened."));
   document.querySelector("#signin")?.addEventListener("click", login);
   document.querySelector("#account-trigger")?.addEventListener("click", () => {
@@ -835,6 +841,9 @@ async function handleContextAction(event) {
   } else if (action === "folder") {
     render();
     callSimple("open_instance_folder", { instanceId: instance.id }, "Instance folder opened.");
+  } else if (action === "console") {
+    render();
+    invoke("open_instance_console", { instanceId: instance.id }).catch((error) => fail("Could not open console", error));
   } else if (action === "play") {
     state.page = "library";
     render();
@@ -1072,6 +1081,173 @@ function updateStatusDom() {
   if (progress) progress.style.width = `${Math.round(state.progress * 100)}%`;
 }
 
+function cleanConsoleMessage(value) {
+  return String(value || "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function consoleLineKind(line) {
+  const message = line.message.toLowerCase();
+  if (line.stream === "system") return "system";
+  if (/\b(fatal|error|exception|crash|failed|failure)\b/.test(message)) return "error";
+  if (/\bwarn(?:ing)?\b/.test(message)) return "warning";
+  return "normal";
+}
+
+async function initConsole() {
+  document.body.classList.add("console-view");
+  let instanceId = viewParams.get("instanceId") || "";
+  let instanceName = viewParams.get("name") || "Minecraft";
+  let version = viewParams.get("version") || "";
+  let autoScroll = true;
+  let ready = false;
+  let pending = [];
+  const seen = new Set();
+
+  app.innerHTML = `
+    <div class="console-shell">
+      <header class="console-header">
+        <span class="console-app-icon">${icon("terminal")}</span>
+        <span class="console-heading"><strong id="console-name">${escapeHtml(instanceName)}</strong><small id="console-version">Minecraft ${escapeHtml(version)}</small></span>
+        <span id="console-state" class="console-state running"><span></span><strong>Running</strong></span>
+        <div class="console-tools">
+          <label class="console-search"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i><input id="console-search" placeholder="Filter" aria-label="Filter console" /></label>
+          <button id="console-follow" class="icon-button active" aria-pressed="true" aria-label="Follow latest output" title="Follow latest output">${icon("down")}</button>
+          <button id="console-copy" class="icon-button" aria-label="Copy console" title="Copy console">${icon("copy")}</button>
+          <button id="console-clear" class="icon-button" aria-label="Clear console" title="Clear console">${icon("trash")}</button>
+        </div>
+      </header>
+      <div id="console-output" class="console-output" role="log" aria-live="off"></div>
+      <footer class="console-footer"><span id="console-count">0 lines</span><span>stdout + stderr</span></footer>
+    </div>`;
+
+  const output = document.querySelector("#console-output");
+  const count = document.querySelector("#console-count");
+  const search = document.querySelector("#console-search");
+  const renderedLines = [];
+
+  const refreshCount = () => {
+    count.textContent = `${renderedLines.length.toLocaleString("en-US")} ${renderedLines.length === 1 ? "line" : "lines"}`;
+  };
+  const applyFilter = () => {
+    const query = search.value.trim().toLowerCase();
+    output.querySelectorAll(".console-line").forEach((element) => {
+      element.hidden = Boolean(query) && !element.dataset.search.includes(query);
+    });
+  };
+  const appendLines = (lines) => {
+    const fragment = document.createDocumentFragment();
+    [...lines].sort((left, right) => left.sequence - right.sequence).forEach((line) => {
+      if (!line || line.instanceId !== instanceId || seen.has(line.sequence)) return;
+      seen.add(line.sequence);
+      const normalized = { ...line, message: cleanConsoleMessage(line.message) };
+      renderedLines.push(normalized);
+      const element = document.createElement("div");
+      element.className = `console-line ${consoleLineKind(normalized)}`;
+      element.dataset.search = normalized.message.toLowerCase();
+      const time = document.createElement("time");
+      time.textContent = normalized.timestamp;
+      const message = document.createElement("span");
+      message.textContent = normalized.message;
+      element.append(time, message);
+      fragment.append(element);
+    });
+    output.append(fragment);
+    while (renderedLines.length > 5_000) {
+      renderedLines.shift();
+      output.firstElementChild?.remove();
+    }
+    refreshCount();
+    applyFilter();
+    if (autoScroll) output.scrollTop = output.scrollHeight;
+  };
+  const clearConsole = () => {
+    renderedLines.length = 0;
+    seen.clear();
+    output.replaceChildren();
+    refreshCount();
+  };
+  const copyConsole = async (selection = "") => {
+    const text = selection || renderedLines.map((line) => `[${line.timestamp}] ${line.message}`).join("\n");
+    await writeClipboard(text);
+  };
+  const setSession = (session) => {
+    if (!session?.instanceId) return;
+    instanceId = session.instanceId;
+    instanceName = session.name || "Minecraft";
+    version = session.version || "";
+    document.querySelector("#console-name").textContent = instanceName;
+    document.querySelector("#console-version").textContent = `Minecraft ${version}`;
+    const status = document.querySelector("#console-state");
+    status.className = "console-state running";
+    status.querySelector("strong").textContent = "Running";
+    pending = [];
+    ready = true;
+    clearConsole();
+  };
+
+  await listen("minecraft-console-line", (event) => {
+    if (!ready) pending.push(event.payload);
+    else appendLines([event.payload]);
+  });
+  await listen("minecraft-console-reset", (event) => setSession(event.payload));
+  await listen("instance-status", (event) => {
+    if (event.payload?.instanceId !== instanceId) return;
+    const status = document.querySelector("#console-state");
+    status.className = `console-state ${event.payload.running ? "running" : "exited"}`;
+    status.querySelector("strong").textContent = event.payload.running ? "Running" : "Exited";
+  });
+
+  try {
+    applyAccent(await invoke("get_system_accent"));
+    const history = await invoke("get_console_history", { instanceId });
+    ready = true;
+    appendLines([...history, ...pending]);
+    pending = [];
+  } catch (error) {
+    ready = true;
+    appendLines([{ instanceId, sequence: 0, timestamp: "--:--:--", stream: "system", message: cleanError(error) }]);
+  }
+
+  search.addEventListener("input", applyFilter);
+  output.addEventListener("scroll", () => {
+    if (output.scrollHeight - output.scrollTop - output.clientHeight > 28 && autoScroll) {
+      autoScroll = false;
+      document.querySelector("#console-follow").classList.remove("active");
+      document.querySelector("#console-follow").setAttribute("aria-pressed", "false");
+    }
+  }, { passive: true });
+  document.querySelector("#console-follow").addEventListener("click", (event) => {
+    autoScroll = !autoScroll;
+    event.currentTarget.classList.toggle("active", autoScroll);
+    event.currentTarget.setAttribute("aria-pressed", String(autoScroll));
+    if (autoScroll) output.scrollTop = output.scrollHeight;
+  });
+  document.querySelector("#console-copy").addEventListener("click", () => copyConsole());
+  document.querySelector("#console-clear").addEventListener("click", clearConsole);
+  document.addEventListener("contextmenu", (event) => {
+    const selection = window.getSelection()?.toString() || "";
+    document.querySelector(".console-context-menu")?.remove();
+    const menu = document.createElement("div");
+    menu.className = "context-menu compact-context-menu console-context-menu";
+    menu.innerHTML = `
+      <button class="context-action" ${selection ? "" : "disabled"}>${icon("copy")}<span>Copy selection</span></button>
+      <button class="context-action">${icon("terminal")}<span>Copy all</span></button>
+      <div class="context-separator"></div>
+      <button class="context-action">${icon("trash")}<span>Clear</span></button>`;
+    document.body.append(menu);
+    const bounds = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(event.clientX, innerWidth - bounds.width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(event.clientY, innerHeight - bounds.height - 8))}px`;
+    const actions = menu.querySelectorAll(".context-action");
+    actions[0].addEventListener("click", () => copyConsole(selection));
+    actions[1].addEventListener("click", () => copyConsole());
+    actions[2].addEventListener("click", clearConsole);
+    void menu.offsetWidth;
+    menu.classList.add("open");
+  });
+  document.addEventListener("click", () => document.querySelector(".console-context-menu")?.remove());
+}
+
 async function init() {
   render();
   try {
@@ -1122,4 +1298,5 @@ window.addEventListener("focus", async () => {
   }
 });
 
-init();
+if (isConsoleView) initConsole();
+else init();

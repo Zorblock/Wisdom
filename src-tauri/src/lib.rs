@@ -7,10 +7,11 @@ mod runtime;
 mod storage;
 
 use serde::Serialize;
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::{BufRead, BufReader, Read};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 const MICROSOFT_CLIENT_ID: &str = "6f216a95-c659-4c83-818b-a4d2c0a6e73f";
 
@@ -18,6 +19,7 @@ const MICROSOFT_CLIENT_ID: &str = "6f216a95-c659-4c83-818b-a4d2c0a6e73f";
 struct RuntimeState {
     signing_in: AtomicBool,
     running_instances: Arc<Mutex<HashSet<String>>>,
+    console_logs: Arc<Mutex<HashMap<String, VecDeque<ConsoleLine>>>>,
 }
 
 #[derive(Serialize)]
@@ -55,6 +57,24 @@ struct Account {
 struct InstanceStatus {
     instance_id: String,
     running: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsoleLine {
+    instance_id: String,
+    sequence: u64,
+    timestamp: String,
+    stream: String,
+    message: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConsoleSession {
+    instance_id: String,
+    name: String,
+    version: String,
 }
 
 impl From<storage::AuthState> for Account {
@@ -240,6 +260,137 @@ fn get_system_accent() -> String {
 }
 
 #[tauri::command]
+fn get_console_history(
+    state: State<'_, RuntimeState>,
+    instance_id: String,
+) -> Result<Vec<ConsoleLine>, String> {
+    let logs = state
+        .console_logs
+        .lock()
+        .map_err(|_| "Could not read console history".to_owned())?;
+    Ok(logs
+        .get(&instance_id)
+        .map(|lines| lines.iter().cloned().collect())
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+async fn open_instance_console(app: AppHandle, instance_id: String) -> Result<(), String> {
+    let lookup_id = instance_id.clone();
+    let instance = run_blocking(move || {
+        let root = storage::user_data_dir()?;
+        instances::load(&root, &lookup_id)
+    })
+    .await?;
+    open_console_window(&app, &instance, false).map(|_| ())
+}
+
+fn console_window_label(instance_id: &str) -> String {
+    format!("console-{instance_id}")
+}
+
+fn open_console_window(
+    app: &AppHandle,
+    instance: &instances::Instance,
+    reset_existing: bool,
+) -> Result<String, String> {
+    let label = console_window_label(&instance.id);
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.set_title(&format!("Wisdom Console — {}", instance.name));
+        let _ = window.show();
+        let _ = window.set_focus();
+        if reset_existing {
+            let _ = app.emit_to(
+                &label,
+                "minecraft-console-reset",
+                ConsoleSession {
+                    instance_id: instance.id.clone(),
+                    name: instance.name.clone(),
+                    version: instance.version.clone(),
+                },
+            );
+        }
+        return Ok(label);
+    }
+
+    let url = format!(
+        "index.html?console=1&instanceId={}&name={}&version={}",
+        urlencoding::encode(&instance.id),
+        urlencoding::encode(&instance.name),
+        urlencoding::encode(&instance.version)
+    );
+    WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
+        .title(format!("Wisdom Console — {}", instance.name))
+        .inner_size(860.0, 540.0)
+        .min_inner_size(620.0, 360.0)
+        .resizable(true)
+        .center()
+        .build()
+        .map_err(|error| format!("Could not open the game console: {error}"))?;
+    Ok(label)
+}
+
+fn store_and_emit_console_line(
+    app: &AppHandle,
+    label: &str,
+    logs: &Arc<Mutex<HashMap<String, VecDeque<ConsoleLine>>>>,
+    sequence: &AtomicU64,
+    instance_id: &str,
+    stream: &str,
+    message: String,
+) {
+    let message = message.trim_end_matches(['\r', '\n']).to_owned();
+    if message.is_empty() {
+        return;
+    }
+    let line = ConsoleLine {
+        instance_id: instance_id.to_owned(),
+        sequence: sequence.fetch_add(1, Ordering::Relaxed),
+        timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+        stream: stream.to_owned(),
+        message,
+    };
+    if let Ok(mut all_logs) = logs.lock() {
+        let history = all_logs.entry(instance_id.to_owned()).or_default();
+        history.push_back(line.clone());
+        while history.len() > 5_000 {
+            history.pop_front();
+        }
+    }
+    let _ = app.emit_to(label, "minecraft-console-line", line);
+}
+
+fn spawn_console_reader<R: Read + Send + 'static>(
+    reader: R,
+    app: AppHandle,
+    label: String,
+    logs: Arc<Mutex<HashMap<String, VecDeque<ConsoleLine>>>>,
+    sequence: Arc<AtomicU64>,
+    instance_id: String,
+    stream: &'static str,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(reader);
+        let mut bytes = Vec::new();
+        loop {
+            bytes.clear();
+            match reader.read_until(b'\n', &mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => store_and_emit_console_line(
+                    &app,
+                    &label,
+                    &logs,
+                    &sequence,
+                    &instance_id,
+                    stream,
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                ),
+            }
+        }
+    })
+}
+
+#[tauri::command]
 async fn launch(
     app: AppHandle,
     state: State<'_, RuntimeState>,
@@ -319,10 +470,68 @@ async fn launch(
                     running: true,
                 },
             );
+            let console_logs = Arc::clone(&state.console_logs);
+            let console_label = if child.stdout.is_some() || child.stderr.is_some() {
+                if let Ok(mut logs) = console_logs.lock() {
+                    logs.insert(instance_id.clone(), VecDeque::new());
+                }
+                match open_console_window(&app, &instance, true) {
+                    Ok(label) => Some(label),
+                    Err(error) => {
+                        let _ = app.emit("status", error);
+                        Some(console_window_label(&instance_id))
+                    }
+                }
+            } else {
+                None
+            };
+            let sequence = Arc::new(AtomicU64::new(1));
+            let mut console_readers = Vec::new();
+            if let (Some(label), Some(stdout)) = (console_label.as_ref(), child.stdout.take()) {
+                console_readers.push(spawn_console_reader(
+                    stdout,
+                    app.clone(),
+                    label.clone(),
+                    Arc::clone(&console_logs),
+                    Arc::clone(&sequence),
+                    instance_id.clone(),
+                    "stdout",
+                ));
+            }
+            if let (Some(label), Some(stderr)) = (console_label.as_ref(), child.stderr.take()) {
+                console_readers.push(spawn_console_reader(
+                    stderr,
+                    app.clone(),
+                    label.clone(),
+                    Arc::clone(&console_logs),
+                    Arc::clone(&sequence),
+                    instance_id.clone(),
+                    "stderr",
+                ));
+            }
+
             let running = Arc::clone(&state.running_instances);
             let monitor_app = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                let _ = child.wait();
+                let exit = child.wait();
+                for reader in console_readers {
+                    let _ = reader.join();
+                }
+                if let Some(label) = console_label {
+                    let message = match exit {
+                        Ok(status) => format!("Process exited with {status}."),
+                        Err(error) => format!("Could not read the process exit status: {error}"),
+                    };
+                    store_and_emit_console_line(
+                        &monitor_app,
+                        &label,
+                        &console_logs,
+                        &sequence,
+                        &instance_id,
+                        "system",
+                        message,
+                    );
+                }
                 if let Ok(mut instances) = running.lock() {
                     instances.remove(&instance_id);
                 }
@@ -385,6 +594,8 @@ pub fn run() {
             open_instance_folder,
             open_data_folder,
             get_system_accent,
+            get_console_history,
+            open_instance_console,
             launch,
         ])
         .run(tauri::generate_context!())

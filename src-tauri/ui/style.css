@@ -650,12 +650,52 @@ input[type="range"] { width: 200px; height: 3px; accent-color: var(--accent); }
 .fatal h1 { margin: 0 0 7px; font-size: 21px; font-weight: 620; }
 .fatal p { max-width: 560px; margin: 0 0 19px; color: var(--muted); font-size: 10px; line-height: 1.55; }
 
+.console-view { min-width: 0; user-select: none; }
+.console-view #app { min-width: 0; }
+.console-shell { display: grid; grid-template-rows: 64px minmax(0, 1fr) 28px; width: 100%; height: 100%; background: #000; }
+.console-header { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 0 14px; border-bottom: 1px solid var(--line); background: #030303; }
+.console-app-icon { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 auto; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--accent); background: #080808; }
+.console-app-icon .icon { width: 14px; height: 14px; }
+.console-heading { min-width: 0; }
+.console-heading strong, .console-heading small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console-heading strong { font-size: 11px; font-weight: 620; }
+.console-heading small { margin-top: 3px; color: var(--muted-2); font-size: 8px; }
+.console-state { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: 4px; color: var(--muted); font-size: 8px; }
+.console-state > span { width: 5px; height: 5px; border-radius: 50%; background: #555; }
+.console-state.running > span { background: var(--accent); box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .1); }
+.console-state.exited > span { background: #666; box-shadow: none; }
+.console-state strong { font-weight: 560; }
+.console-tools { display: flex; align-items: center; gap: 5px; min-width: 0; margin-left: auto; }
+.console-tools .icon-button { width: 32px; height: 32px; flex: 0 0 auto; background: #050505; }
+.console-tools .icon-button.active { color: var(--accent); border-color: rgba(var(--accent-rgb), .5); background: rgba(var(--accent-rgb), .1); }
+.console-search { display: flex; align-items: center; width: clamp(110px, 21vw, 190px); height: 32px; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted-2); background: #000; }
+.console-search:focus-within { border-color: var(--accent); color: var(--accent); }
+.console-search i { width: 15px; font-size: 9px; }
+.console-search input { min-width: 0; width: 100%; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 9px; cursor: text; }
+.console-search input::placeholder { color: #555; }
+.console-output { min-height: 0; overflow: auto; padding: 9px 0 22px; color: #b8b8b8; background: #000; scrollbar-width: thin; scrollbar-color: #292929 transparent; user-select: text; }
+.console-line { display: grid; grid-template-columns: 68px minmax(0, 1fr); min-height: 21px; padding: 2px 14px; font: 10px/1.7 "Cascadia Mono", "Consolas", monospace; }
+.console-line:hover { background: #070707; }
+.console-line time { color: #4f4f4f; user-select: none; }
+.console-line > span { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.console-line.warning > span { color: #d8b66a; }
+.console-line.error > span { color: #e47b7b; }
+.console-line.system > span { color: var(--accent); }
+.console-footer { display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-top: 1px solid var(--line); color: #555; background: #020202; font-size: 8px; }
+.console-context-menu { z-index: 100; }
+
 @keyframes loading-line { from { transform: translateX(-100%); } to { transform: translateX(460%); } }
 
 @media (max-width: 920px) {
   .app-shell { grid-template-columns: 196px minmax(0, 1fr); }
   .topbar, .content-scroll { padding-left: 26px; padding-right: 26px; }
   .settings-group { grid-template-columns: 1fr; gap: 11px; }
+}
+
+@media (max-width: 700px) {
+  .console-state { display: none; }
+  .console-search { width: 110px; }
+  .console-heading { max-width: 145px; }
 }
 
 @media (max-height: 700px) {
