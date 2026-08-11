@@ -17,6 +17,14 @@ use std::os::windows::process::CommandExt;
 const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 pub type ProgressReporter = dyn Fn(f32, String) + Send + Sync;
 
+#[derive(Clone, Debug)]
+pub struct LaunchOptions {
+    pub ram_mb: u32,
+    pub jvm_args: String,
+    pub game_args: String,
+    pub open_console: bool,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct VersionManifest { pub latest: LatestVersions, pub versions: Vec<ManifestVersion> }
 #[derive(Clone, Debug, Deserialize)]
@@ -61,7 +69,7 @@ pub fn load_versions() -> Result<(VersionManifest, Vec<ManifestVersion>)> {
     Ok((manifest, list))
 }
 
-pub fn install_and_launch(root: &Path, game_dir: &Path, entry: &ManifestVersion, auth: &AuthState, open_console: bool, report: &(dyn Fn(String) + Send + Sync), progress: &ProgressReporter) -> Result<()> {
+pub fn install_and_launch(root: &Path, game_dir: &Path, entry: &ManifestVersion, auth: &AuthState, options: &LaunchOptions, report: &(dyn Fn(String) + Send + Sync), progress: &ProgressReporter) -> Result<()> {
     let client = http()?;
     report(format!("Loading Minecraft {} metadata …", entry.id));
     let meta: VersionMeta = client.get(&entry.url).send()?.error_for_status()?.json()?;
@@ -135,11 +143,22 @@ pub fn install_and_launch(root: &Path, game_dir: &Path, entry: &ManifestVersion,
         ("${launcher_name}", "Wisdom".into()), ("${launcher_version}", env!("CARGO_PKG_VERSION").into()),
     ]);
     let (mut jvm_args, game_args) = build_arguments(&meta, &substitutions)?;
+    jvm_args.push(format!("-Xmx{}M", options.ram_mb));
+    jvm_args.extend(options.jvm_args.split_whitespace().map(str::to_owned));
     if !jvm_args.iter().any(|arg| arg == "-cp" || arg == "-classpath") { jvm_args.extend(["-cp".to_owned(), substitutions["${classpath}"].clone()]); }
+    let mut game_args = game_args;
+    game_args.extend(options.game_args.split_whitespace().map(str::to_owned));
+    #[cfg(windows)]
+    let java = if options.open_console {
+        java
+    } else {
+        let javaw = java.with_file_name("javaw.exe");
+        if javaw.exists() { javaw } else { java }
+    };
     let mut game = Command::new(java);
     game.args(&jvm_args).arg(&meta.main_class).args(&game_args).current_dir(game_dir);
     #[cfg(windows)]
-    game.creation_flags(if open_console { 0x0000_0010 } else { 0x0800_0000 });
+    game.creation_flags(if options.open_console { 0x0000_0010 } else { 0x0800_0000 });
     game.spawn().context("Could not start Java. Install Java 21+ or set JAVA_HOME")?;
     Ok(())
 }

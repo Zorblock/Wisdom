@@ -8,6 +8,12 @@ pub struct Instance {
     pub id: String,
     pub name: String,
     pub version: String,
+    #[serde(default)]
+    pub ram_mb: Option<u32>,
+    #[serde(default)]
+    pub jvm_args: Option<String>,
+    #[serde(default)]
+    pub game_args: Option<String>,
 }
 
 pub fn load_or_create(root: &Path, default_version: &str) -> Result<Vec<Instance>> {
@@ -24,7 +30,7 @@ pub fn load_or_create(root: &Path, default_version: &str) -> Result<Vec<Instance
     }
     instances.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
     if instances.is_empty() {
-        let instance = Instance { id: "vanilla".into(), name: "Vanilla".into(), version: default_version.into() };
+        let instance = Instance { id: "vanilla".into(), name: "Vanilla".into(), version: default_version.into(), ram_mb: None, jvm_args: None, game_args: None };
         save(root, &instance)?;
         instances.push(instance);
     }
@@ -38,7 +44,7 @@ pub fn create(root: &Path, version: &str, existing: &[Instance]) -> Result<Insta
         if existing.iter().all(|instance| instance.id != id) { break (id, format!("Instance {number}")); }
         number += 1;
     };
-    let instance = Instance { id, name, version: version.into() };
+    let instance = Instance { id, name, version: version.into(), ram_mb: None, jvm_args: None, game_args: None };
     save(root, &instance)?;
     Ok(instance)
 }

@@ -26,10 +26,24 @@ struct SessionProfile {
     skin_url: Option<String>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
-struct LauncherSettings {
+#[derive(Clone, Serialize, Deserialize)]
+pub struct LauncherSettings {
     #[serde(default)]
-    open_console: bool,
+    pub open_console: bool,
+    #[serde(default = "default_ram_mb")]
+    pub ram_mb: u32,
+    #[serde(default)]
+    pub jvm_args: String,
+    #[serde(default)]
+    pub game_args: String,
+}
+
+fn default_ram_mb() -> u32 { 4096 }
+
+impl Default for LauncherSettings {
+    fn default() -> Self {
+        Self { open_console: false, ram_mb: default_ram_mb(), jvm_args: String::new(), game_args: String::new() }
+    }
 }
 
 pub fn user_data_dir() -> Result<PathBuf> {
@@ -66,15 +80,14 @@ pub fn clear_auth() -> Result<()> {
     Ok(())
 }
 
-pub fn load_open_console(root: &Path) -> bool {
+pub fn load_settings(root: &Path) -> LauncherSettings {
     fs::read_to_string(root.join("settings.json"))
         .ok()
         .and_then(|contents| serde_json::from_str::<LauncherSettings>(&contents).ok())
-        .is_some_and(|settings| settings.open_console)
+        .unwrap_or_default()
 }
 
-pub fn save_open_console(root: &Path, open_console: bool) -> Result<()> {
-    let settings = LauncherSettings { open_console };
+pub fn save_settings(root: &Path, settings: &LauncherSettings) -> Result<()> {
     fs::write(root.join("settings.json"), serde_json::to_vec_pretty(&settings)?)?;
     Ok(())
 }
