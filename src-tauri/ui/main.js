@@ -8,6 +8,8 @@ let data;
 let activeInstance = 0;
 let selectedVersion = "";
 
+app.innerHTML = `<div class="loading"><img src="${logo}" /><strong>WISDOM</strong><span>Loading your launcher…</span></div>`;
+
 function initials(name = "?") { return name.slice(0, 1).toUpperCase(); }
 function render() {
   const instance = data.instances[activeInstance];
@@ -49,7 +51,8 @@ async function createInstance() { try { const instance = await invoke("create_in
 async function launch() { try { const instance = data.instances[activeInstance]; setStatus("Preparing Minecraft…"); await invoke("launch", { instanceId: instance.id, version: selectedVersion || instance.version }); setStatus("Minecraft started."); } catch (error) { setStatus(`Could not start: ${error}`); } }
 
 async function init() {
-  await listen("status", event => setStatus(event.payload));
+  try { await listen("status", event => setStatus(event.payload)); }
+  catch (error) { console.warn("Status events unavailable", error); }
   try { data = await invoke("load_launcher"); selectedVersion = data.latestVersion; render(); }
   catch (error) { app.innerHTML = `<div class="error">Could not load Wisdom: ${error}</div>`; }
 }

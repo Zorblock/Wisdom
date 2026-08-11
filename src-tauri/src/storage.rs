@@ -4,6 +4,7 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const USER_AGENT: &str = "WisdomLauncher/0.1 (Windows; Rust)";
 
@@ -87,6 +88,7 @@ pub fn load_settings(root: &Path) -> LauncherSettings {
         .unwrap_or_default()
 }
 
+#[allow(dead_code)]
 pub fn save_settings(root: &Path, settings: &LauncherSettings) -> Result<()> {
     fs::write(root.join("settings.json"), serde_json::to_vec_pretty(&settings)?)?;
     Ok(())
@@ -102,5 +104,5 @@ pub fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {
 }
 
 pub fn http() -> Result<Client> {
-    Ok(Client::builder().user_agent(USER_AGENT).build()?)
+    Ok(Client::builder().user_agent(USER_AGENT).timeout(Duration::from_secs(20)).build()?)
 }
