@@ -1,10 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use winreg::RegKey;
+use winreg::enums::HKEY_CURRENT_USER;
 
 const USER_AGENT: &str = "WisdomLauncher/0.1 (Windows; Rust)";
 
@@ -19,12 +21,37 @@ pub struct AuthState {
     pub skin_url: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountProfile {
+    pub name: String,
+    pub uuid: String,
+    pub skin_url: Option<String>,
+}
+
+impl From<&AuthState> for AccountProfile {
+    fn from(auth: &AuthState) -> Self {
+        Self {
+            name: auth.player_name.clone(),
+            uuid: auth.player_uuid.clone(),
+            skin_url: auth.skin_url.clone(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct SessionProfile {
     expires_at: DateTime<Utc>,
     player_name: String,
     player_uuid: String,
     skin_url: Option<String>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountIndex {
+    active_uuid: Option<String>,
+    accounts: Vec<AccountProfile>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -66,6 +93,21 @@ pub fn user_data_dir() -> Result<PathBuf> {
         .join("Wisdom"))
 }
 
+pub fn windows_accent_color() -> String {
+    let value = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey("Software\\Microsoft\\Windows\\DWM")
+        .and_then(|key| key.get_value::<u32, _>("AccentColor"));
+    match value {
+        Ok(abgr) => format!(
+            "#{:02X}{:02X}{:02X}",
+            abgr & 0xff,
+            (abgr >> 8) & 0xff,
+            (abgr >> 16) & 0xff
+        ),
+        Err(_) => "#0078D4".to_owned(),
+    }
+}
+
 pub fn prepare_storage(root: &Path) -> Result<()> {
     for folder in [
         "cache",
@@ -81,13 +123,163 @@ pub fn prepare_storage(root: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn load_accounts(root: &Path) -> Result<(Option<AccountProfile>, Vec<AccountProfile>)> {
+    let index = load_account_index(root)?;
+    let active = index
+        .active_uuid
+        .as_ref()
+        .and_then(|uuid| index.accounts.iter().find(|account| &account.uuid == uuid))
+        .cloned();
+    Ok((active, index.accounts))
+}
+
 pub fn load_auth() -> Result<AuthState> {
-    let refresh_token = credential("minecraft-refresh-token")?
+    let root = user_data_dir()?;
+    let index = load_account_index(&root)?;
+    let uuid = index.active_uuid.context("No Microsoft account selected")?;
+    load_auth_for(&uuid)
+}
+
+pub fn save_auth(auth: &AuthState) -> Result<()> {
+    let root = user_data_dir()?;
+    prepare_storage(&root)?;
+    write_auth_credentials(auth)?;
+    let mut index = load_account_index(&root)?;
+    let profile = AccountProfile::from(auth);
+    if let Some(existing) = index
+        .accounts
+        .iter_mut()
+        .find(|item| item.uuid == profile.uuid)
+    {
+        *existing = profile;
+    } else {
+        index.accounts.push(profile);
+    }
+    index.active_uuid = Some(auth.player_uuid.clone());
+    save_account_index(&root, &index)
+}
+
+pub fn select_account(root: &Path, uuid: &str) -> Result<AuthState> {
+    let mut index = load_account_index(root)?;
+    if !index.accounts.iter().any(|account| account.uuid == uuid) {
+        bail!("Account not found");
+    }
+    let auth = load_auth_for(uuid)?;
+    index.active_uuid = Some(uuid.to_owned());
+    save_account_index(root, &index)?;
+    Ok(auth)
+}
+
+pub fn remove_account(root: &Path, uuid: &str) -> Result<Option<AuthState>> {
+    let mut index = load_account_index(root)?;
+    let original_len = index.accounts.len();
+    index.accounts.retain(|account| account.uuid != uuid);
+    if index.accounts.len() == original_len {
+        bail!("Account not found");
+    }
+    if index.active_uuid.as_deref() == Some(uuid) {
+        index.active_uuid = index.accounts.first().map(|account| account.uuid.clone());
+    }
+    let next_uuid = index.active_uuid.clone();
+    let next_account = next_uuid.as_deref().map(load_auth_for).transpose()?;
+    save_account_index(root, &index)?;
+    for kind in ["refresh", "access", "profile"] {
+        let _ = account_credential(kind, uuid)?.delete_credential();
+    }
+    Ok(next_account)
+}
+
+pub fn clear_auth() -> Result<()> {
+    let root = user_data_dir()?;
+    let index = load_account_index(&root)?;
+    if let Some(uuid) = index.active_uuid {
+        let _ = remove_account(&root, &uuid)?;
+    }
+    Ok(())
+}
+
+fn load_account_index(root: &Path) -> Result<AccountIndex> {
+    let path = root.join("accounts.json");
+    let mut index = match fs::read(&path) {
+        Ok(contents) => serde_json::from_slice::<AccountIndex>(&contents)
+            .context("Account list is corrupted")?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => AccountIndex::default(),
+        Err(error) => return Err(error).context("Could not read the account list"),
+    };
+
+    if index.accounts.is_empty()
+        && let Ok(legacy) = load_legacy_auth()
+    {
+        write_auth_credentials(&legacy)?;
+        index.active_uuid = Some(legacy.player_uuid.clone());
+        index.accounts.push(AccountProfile::from(&legacy));
+        save_account_index(root, &index)?;
+        clear_legacy_credentials();
+    }
+
+    if index
+        .active_uuid
+        .as_ref()
+        .is_none_or(|uuid| !index.accounts.iter().any(|account| &account.uuid == uuid))
+    {
+        index.active_uuid = index.accounts.first().map(|account| account.uuid.clone());
+    }
+    Ok(index)
+}
+
+fn save_account_index(root: &Path, index: &AccountIndex) -> Result<()> {
+    fs::create_dir_all(root)?;
+    let temporary = root.join("accounts.json.tmp");
+    let destination = root.join("accounts.json");
+    fs::write(&temporary, serde_json::to_vec_pretty(index)?)?;
+    replace_file(&temporary, &destination)
+}
+
+fn load_auth_for(uuid: &str) -> Result<AuthState> {
+    validate_uuid(uuid)?;
+    let refresh_token = account_credential("refresh", uuid)?
         .get_password()
-        .context("no saved Microsoft session")?;
-    let minecraft_access_token = credential("minecraft-access-token")?
+        .context("Microsoft sign-in is missing")?;
+    let minecraft_access_token = account_credential("access", uuid)?
         .get_password()
-        .context("no saved Minecraft session")?;
+        .context("Minecraft sign-in is missing")?;
+    let profile: SessionProfile = serde_json::from_str(
+        &account_credential("profile", uuid)?
+            .get_password()
+            .context("Account profile is missing")?,
+    )?;
+    if profile.player_uuid != uuid {
+        bail!("Account profile is corrupted");
+    }
+    Ok(AuthState {
+        minecraft_access_token,
+        microsoft_refresh_token: refresh_token,
+        expires_at: profile.expires_at,
+        player_name: profile.player_name,
+        player_uuid: profile.player_uuid,
+        skin_url: profile.skin_url,
+    })
+}
+
+fn write_auth_credentials(auth: &AuthState) -> Result<()> {
+    validate_uuid(&auth.player_uuid)?;
+    account_credential("refresh", &auth.player_uuid)?
+        .set_password(&auth.microsoft_refresh_token)?;
+    account_credential("access", &auth.player_uuid)?.set_password(&auth.minecraft_access_token)?;
+    let profile = SessionProfile {
+        expires_at: auth.expires_at,
+        player_name: auth.player_name.clone(),
+        player_uuid: auth.player_uuid.clone(),
+        skin_url: auth.skin_url.clone(),
+    };
+    account_credential("profile", &auth.player_uuid)?
+        .set_password(&serde_json::to_string(&profile)?)?;
+    Ok(())
+}
+
+fn load_legacy_auth() -> Result<AuthState> {
+    let refresh_token = credential("minecraft-refresh-token")?.get_password()?;
+    let minecraft_access_token = credential("minecraft-access-token")?.get_password()?;
     let profile: SessionProfile =
         serde_json::from_str(&credential("minecraft-profile")?.get_password()?)?;
     Ok(AuthState {
@@ -100,28 +292,33 @@ pub fn load_auth() -> Result<AuthState> {
     })
 }
 
-pub fn save_auth(auth: &AuthState) -> Result<()> {
-    credential("minecraft-refresh-token")?.set_password(&auth.microsoft_refresh_token)?;
-    credential("minecraft-access-token")?.set_password(&auth.minecraft_access_token)?;
-    let profile = SessionProfile {
-        expires_at: auth.expires_at,
-        player_name: auth.player_name.clone(),
-        player_uuid: auth.player_uuid.clone(),
-        skin_url: auth.skin_url.clone(),
-    };
-    credential("minecraft-profile")?.set_password(&serde_json::to_string(&profile)?)?;
-    Ok(())
-}
-
-pub fn clear_auth() -> Result<()> {
+fn clear_legacy_credentials() {
     for name in [
         "minecraft-refresh-token",
         "minecraft-access-token",
         "minecraft-profile",
     ] {
-        let _ = credential(name)?.delete_credential();
+        if let Ok(entry) = credential(name) {
+            let _ = entry.delete_credential();
+        }
+    }
+}
+
+fn validate_uuid(uuid: &str) -> Result<()> {
+    if uuid.is_empty()
+        || uuid.len() > 40
+        || !uuid
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || character == '-')
+    {
+        bail!("Invalid account ID");
     }
     Ok(())
+}
+
+fn account_credential(kind: &str, uuid: &str) -> Result<keyring::Entry> {
+    validate_uuid(uuid)?;
+    credential(&format!("minecraft-{kind}:{uuid}"))
 }
 
 pub fn load_settings(root: &Path) -> LauncherSettings {
@@ -131,20 +328,23 @@ pub fn load_settings(root: &Path) -> LauncherSettings {
         .unwrap_or_default()
 }
 
-#[allow(dead_code)]
 pub fn save_settings(root: &Path, settings: &LauncherSettings) -> Result<()> {
     let temporary = root.join("settings.json.tmp");
     let destination = root.join("settings.json");
     fs::write(&temporary, serde_json::to_vec_pretty(settings)?)?;
-    if destination.exists() {
-        fs::remove_file(&destination)?;
-    }
-    fs::rename(temporary, destination)?;
-    Ok(())
+    replace_file(&temporary, &destination)
 }
 
 fn credential(name: &str) -> Result<keyring::Entry> {
     Ok(keyring::Entry::new("Wisdom Minecraft Launcher", name)?)
+}
+
+fn replace_file(source: &Path, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        fs::remove_file(destination)?;
+    }
+    fs::rename(source, destination)?;
+    Ok(())
 }
 
 pub fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<T> {
@@ -160,4 +360,15 @@ pub fn http() -> Result<Client> {
         .connect_timeout(Duration::from_secs(6))
         .timeout(Duration::from_secs(30))
         .build()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_uuid;
+
+    #[test]
+    fn validates_account_ids() {
+        assert!(validate_uuid("069a79f444e94726a5befca90e38aaf5").is_ok());
+        assert!(validate_uuid("../credential").is_err());
+    }
 }

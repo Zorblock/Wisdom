@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -127,6 +127,10 @@ struct RuleOs {
 #[derive(Debug, Deserialize)]
 struct AssetIndex {
     objects: HashMap<String, AssetObject>,
+    #[serde(default, rename = "virtual")]
+    virtual_assets: bool,
+    #[serde(default)]
+    map_to_resources: bool,
 }
 #[derive(Debug, Deserialize)]
 struct AssetObject {
@@ -168,8 +172,7 @@ pub fn load_versions(root: &Path) -> Result<(VersionManifest, Vec<ManifestVersio
             Err(error) => match cached_manifest {
                 Some(manifest) => manifest,
                 None => {
-                    return Err(error)
-                        .context("Minecraft-Versionsliste konnte nicht geladen werden");
+                    return Err(error).context("Could not load the Minecraft version list");
                 }
             },
         }
@@ -191,9 +194,9 @@ pub fn install_and_launch(
     options: &LaunchOptions,
     report: &(dyn Fn(String) + Send + Sync),
     progress: &ProgressReporter,
-) -> Result<()> {
+) -> Result<Child> {
     let client = http()?;
-    report(format!("Minecraft {} wird vorbereitet …", entry.id));
+    report(format!("Preparing Minecraft {}...", entry.id));
     let meta: VersionMeta = client.get(&entry.url).send()?.error_for_status()?.json()?;
     let java = crate::runtime::ensure_java(
         root,
@@ -210,11 +213,11 @@ pub fn install_and_launch(
         &client,
         &meta.downloads.client,
         &client_jar,
-        "Minecraft-Client",
+        "Minecraft client",
         progress,
     )?;
 
-    report("Bibliotheken und Windows-Komponenten werden geprüft …".into());
+    report("Checking libraries and Windows components...".into());
     let mut classpath = vec![client_jar];
     let natives_dir = root.join("natives").join(&meta.id);
     fs::create_dir_all(&natives_dir)?;
@@ -248,19 +251,19 @@ pub fn install_and_launch(
             }
         }
     }
-    download_batch(&client, libraries, "Bibliotheken", progress)?;
+    download_batch(&client, libraries, "Libraries", progress)?;
     let native_downloads = native_archives
         .iter()
         .map(|(download, path, _)| (download.clone(), path.clone()))
         .collect();
-    download_batch(&client, native_downloads, "Windows-Komponenten", progress)?;
+    download_batch(&client, native_downloads, "Windows components", progress)?;
     for (_, archive, extract) in native_archives {
         extract_native(&archive, &natives_dir, extract.as_ref())?;
     }
 
     let assets_root = root.join("assets");
-    let assets_index_name = if let Some(asset_index) = &meta.asset_index {
-        report("Spieldateien werden geprüft …".into());
+    let (assets_index_name, game_assets_dir) = if let Some(asset_index) = &meta.asset_index {
+        report("Checking game assets...".into());
         let index_name = asset_index
             .id
             .clone()
@@ -277,7 +280,7 @@ pub fn install_and_launch(
         let index_path = assets_root
             .join("indexes")
             .join(format!("{index_name}.json"));
-        download_file(&client, asset_index, &index_path, "Dateiindex", progress)?;
+        download_file(&client, asset_index, &index_path, "Asset index", progress)?;
         let index: AssetIndex = read_json(&index_path)?;
         let mut seen_hashes = HashSet::new();
         let mut missing_assets = Vec::new();
@@ -305,13 +308,29 @@ pub fn install_and_launch(
                 ));
             }
         }
-        download_batch(&client, missing_assets, "Spieldateien", progress)?;
-        index_name
+        download_batch(&client, missing_assets, "Game assets", progress)?;
+
+        let resources_dir = game_dir.join("resources");
+        let virtual_dir = assets_root.join("virtual").join(&index_name);
+        if index.map_to_resources {
+            materialize_assets(&index, &assets_root.join("objects"), &resources_dir)?;
+        }
+        if index.virtual_assets {
+            materialize_assets(&index, &assets_root.join("objects"), &virtual_dir)?;
+        }
+        let game_assets = if index.map_to_resources {
+            resources_dir
+        } else if index.virtual_assets {
+            virtual_dir
+        } else {
+            assets_root.clone()
+        };
+        (index_name, game_assets)
     } else {
-        String::new()
+        (String::new(), assets_root.clone())
     };
 
-    report("Minecraft wird gestartet …".into());
+    report("Starting Minecraft...".into());
     fs::create_dir_all(game_dir)?;
     let classpath_text = std::env::join_paths(&classpath)?
         .to_string_lossy()
@@ -321,9 +340,14 @@ pub fn install_and_launch(
         ("${version_name}", meta.id.clone()),
         ("${game_directory}", game_dir.to_string_lossy().to_string()),
         ("${assets_root}", assets_root.to_string_lossy().to_string()),
+        (
+            "${game_assets}",
+            game_assets_dir.to_string_lossy().to_string(),
+        ),
         ("${assets_index_name}", assets_index_name),
         ("${auth_uuid}", auth.player_uuid.clone()),
         ("${auth_access_token}", auth.minecraft_access_token.clone()),
+        ("${auth_session}", auth.minecraft_access_token.clone()),
         ("${user_type}", "msa".into()),
         ("${version_type}", "Wisdom".into()),
         (
@@ -354,7 +378,7 @@ pub fn install_and_launch(
             &client,
             &logging.file,
             &log_path,
-            "Log-Konfiguration",
+            "Log configuration",
             progress,
         )?;
         jvm_args.push(
@@ -365,6 +389,15 @@ pub fn install_and_launch(
     }
     jvm_args.push(format!("-Xmx{}M", options.ram_mb));
     jvm_args.extend(parse_extra_arguments(&options.jvm_args)?);
+    if !jvm_args
+        .iter()
+        .any(|argument| argument.starts_with("-Djava.library.path="))
+    {
+        jvm_args.push(format!(
+            "-Djava.library.path={}",
+            natives_dir.to_string_lossy()
+        ));
+    }
     if !jvm_args
         .iter()
         .any(|arg| arg == "-cp" || arg == "-classpath")
@@ -385,14 +418,19 @@ pub fn install_and_launch(
         .arg(&meta.main_class)
         .args(&game_args)
         .current_dir(game_dir);
+    if let Some(path) = std::env::var_os("PATH") {
+        let paths = std::env::split_paths(&path).chain([natives_dir.clone()]);
+        if let Ok(path) = std::env::join_paths(paths) {
+            game.env("PATH", path);
+        }
+    }
     #[cfg(windows)]
     game.creation_flags(if options.open_console {
         0x0000_0010
     } else {
         0x0800_0000
     });
-    game.spawn().context("Java konnte nicht gestartet werden")?;
-    Ok(())
+    game.spawn().context("Could not start Java")
 }
 
 fn download_file(
@@ -410,7 +448,7 @@ fn download_file(
         };
         progress(
             amount,
-            format!("{label} wird geladen · {}%", (amount * 100.0) as u32),
+            format!("Downloading {label} · {}%", (amount * 100.0) as u32),
         );
     })
 }
@@ -454,7 +492,7 @@ fn download_to_disk(
         let actual = format!("{:x}", hasher.finalize());
         if !actual.eq_ignore_ascii_case(expected) {
             fs::remove_file(&temporary)?;
-            bail!("Prüfsumme stimmt nicht überein: {}", source.url);
+            bail!("Checksum does not match: {}", source.url);
         }
     }
     replace_file(&temporary, destination)?;
@@ -468,12 +506,12 @@ fn download_batch(
     progress: &ProgressReporter,
 ) -> Result<()> {
     if tasks.is_empty() {
-        progress(1.0, format!("{category} sind bereit."));
+        progress(1.0, format!("{category} are ready."));
         return Ok(());
     }
 
     let total = tasks.len();
-    progress(0.0, format!("{category} werden geladen · 0/{total}"));
+    progress(0.0, format!("Downloading {category} · 0/{total}"));
     let (sender, receiver) = mpsc::channel();
     for task in tasks {
         sender.send(task).expect("download queue should be open");
@@ -507,17 +545,14 @@ fn download_batch(
                     if let Err(error) = download_to_disk(&client, &source, &destination, |_, _| {})
                     {
                         if let Ok(mut stored) = failure.lock() {
-                            *stored = Some(format!(
-                                "Download fehlgeschlagen ({}): {error:#}",
-                                source.url
-                            ));
+                            *stored = Some(format!("Download failed ({}): {error:#}", source.url));
                         }
                         break;
                     }
                     let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
                     progress(
                         count as f32 / total as f32,
-                        format!("{category} werden geladen · {count}/{total}"),
+                        format!("Downloading {category} · {count}/{total}"),
                     );
                 }
             });
@@ -543,6 +578,46 @@ fn sha1_file(path: &Path) -> Result<String> {
     }
     Ok(format!("{:x}", hasher.finalize()))
 }
+
+fn materialize_assets(index: &AssetIndex, objects_dir: &Path, destination: &Path) -> Result<()> {
+    for (logical_name, asset) in &index.objects {
+        if asset.hash.len() < 2 {
+            bail!("Invalid asset hash for {logical_name}");
+        }
+        let logical_path = Path::new(logical_name);
+        if !logical_path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+        {
+            bail!("Invalid asset path: {logical_name}");
+        }
+        let source = objects_dir.join(&asset.hash[0..2]).join(&asset.hash);
+        if !source.is_file() {
+            bail!("Asset object is missing: {}", asset.hash);
+        }
+        let output = destination.join(logical_path);
+        if output.is_file()
+            && sha1_file(&output).is_ok_and(|hash| hash.eq_ignore_ascii_case(&asset.hash))
+        {
+            continue;
+        }
+        if output.exists() {
+            fs::remove_file(&output)
+                .with_context(|| format!("Could not replace asset {logical_name}"))?;
+        }
+        fs::create_dir_all(
+            output
+                .parent()
+                .context("Asset destination has no parent directory")?,
+        )?;
+        if fs::hard_link(&source, &output).is_err() {
+            fs::copy(&source, &output)
+                .with_context(|| format!("Could not materialize asset {logical_name}"))?;
+        }
+    }
+    Ok(())
+}
+
 fn library_path(root: &Path, download: &Download) -> Result<PathBuf> {
     Ok(root
         .join("libraries")
@@ -693,7 +768,10 @@ fn parse_extra_arguments(input: &str) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_extra_arguments;
+    use super::{AssetIndex, AssetObject, materialize_assets, parse_extra_arguments};
+    use sha1::{Digest, Sha1};
+    use std::collections::HashMap;
+    use std::fs;
 
     #[test]
     fn parses_quoted_extra_arguments() {
@@ -701,5 +779,37 @@ mod tests {
             parse_extra_arguments(r#"-Dname="hello world" --demo"#).unwrap(),
             ["-Dname=hello world", "--demo"]
         );
+    }
+
+    #[test]
+    fn materializes_legacy_asset_tree() {
+        let root = std::env::temp_dir().join(format!(
+            "wisdom-legacy-assets-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let contents = b"legacy icon";
+        let hash = format!("{:x}", Sha1::digest(contents));
+        let objects = root.join("objects");
+        let object = objects.join(&hash[0..2]).join(&hash);
+        fs::create_dir_all(object.parent().unwrap()).unwrap();
+        fs::write(&object, contents).unwrap();
+        let index = AssetIndex {
+            objects: HashMap::from([("icons/icon_16x16.png".to_owned(), AssetObject { hash })]),
+            virtual_assets: false,
+            map_to_resources: true,
+        };
+        let resources = root.join("resources");
+
+        materialize_assets(&index, &objects, &resources).unwrap();
+
+        assert_eq!(
+            fs::read(resources.join("icons/icon_16x16.png")).unwrap(),
+            contents
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

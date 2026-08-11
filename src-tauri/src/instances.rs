@@ -115,42 +115,41 @@ pub fn mark_launched(root: &Path, id: &str, version: &str) -> Result<Instance> {
 
 pub fn delete(root: &Path, id: &str) -> Result<()> {
     if !valid_id(id) {
-        bail!("Ungültige Instanz-ID");
+        bail!("Invalid instance ID");
     }
     let directory = root.join("instances").join(id);
     let instances_root = root.join("instances");
     if directory.parent() != Some(instances_root.as_path()) {
-        bail!("Ungültiger Instanzpfad");
+        bail!("Invalid instance path");
     }
     if !directory.join("instance.json").is_file() {
-        bail!("Instanz wurde nicht gefunden");
+        bail!("Instance not found");
     }
-    fs::remove_dir_all(&directory)
-        .with_context(|| format!("Instanz {id} konnte nicht gelöscht werden"))
+    fs::remove_dir_all(&directory).with_context(|| format!("Could not delete instance {id}"))
 }
 
 pub fn save(root: &Path, instance: &Instance) -> Result<()> {
     if !valid_id(&instance.id) {
-        bail!("Ungültige Instanz-ID");
+        bail!("Invalid instance ID");
     }
     let directory = game_dir(root, instance);
     fs::create_dir_all(&directory)?;
     let temporary = directory.join("instance.json.tmp");
     fs::write(&temporary, serde_json::to_vec_pretty(instance)?)
-        .with_context(|| format!("Instanz {} konnte nicht gespeichert werden", instance.name))?;
+        .with_context(|| format!("Could not save instance {}", instance.name))?;
     replace_file(&temporary, &directory.join("instance.json"))
 }
 
 pub fn load(root: &Path, id: &str) -> Result<Instance> {
     if !valid_id(id) {
-        bail!("Ungültige Instanz-ID");
+        bail!("Invalid instance ID");
     }
     let instance: Instance = serde_json::from_slice(
         &fs::read(root.join("instances").join(id).join("instance.json"))
-            .context("Instanz wurde nicht gefunden")?,
+            .context("Instance not found")?,
     )?;
     if instance.id != id {
-        bail!("Instanzdaten sind beschädigt");
+        bail!("Instance data is corrupted");
     }
     Ok(instance)
 }
@@ -162,7 +161,7 @@ pub fn game_dir(root: &Path, instance: &Instance) -> PathBuf {
 fn clean_name(name: &str) -> Result<String> {
     let name = name.trim();
     if !valid_name(name) {
-        bail!("Der Name muss zwischen 1 und 48 Zeichen lang sein");
+        bail!("The name must be between 1 and 48 characters long");
     }
     Ok(name.to_owned())
 }
@@ -179,7 +178,7 @@ fn validate_version(version: &str) -> Result<String> {
             character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
         })
     {
-        bail!("Ungültige Minecraft-Version");
+        bail!("Invalid Minecraft version");
     }
     Ok(version.to_owned())
 }

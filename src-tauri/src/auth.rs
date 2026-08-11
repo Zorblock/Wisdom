@@ -56,8 +56,8 @@ pub fn login(
     report: &(dyn Fn(String) + Send + Sync),
     cancelled: &AtomicBool,
 ) -> Result<AuthState> {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .context("Lokaler Anmelde-Port konnte nicht geöffnet werden")?;
+    let listener =
+        TcpListener::bind("127.0.0.1:0").context("Could not open the local sign-in port")?;
     listener.set_nonblocking(true)?;
     let redirect_uri = format!("http://localhost:{}", listener.local_addr()?.port());
     let verifier = random_token(48);
@@ -71,10 +71,10 @@ pub fn login(
         urlencoding::encode(&challenge),
         urlencoding::encode(&state)
     );
-    report("Anmeldung im Browser abschließen …".into());
-    open::that(authorization_url).context("Der Browser konnte nicht geöffnet werden")?;
+    report("Complete sign-in in your browser...".into());
+    open::that(authorization_url).context("Could not open the browser")?;
     let code = wait_for_redirect(&listener, &state, cancelled)?;
-    report("Xbox-Live-Konto wird geprüft …".into());
+    report("Checking Xbox Live account...".into());
     let client = http()?;
     let token: OAuthToken = client
         .post("https://login.microsoftonline.com/consumers/oauth2/v2.0/token")
@@ -90,7 +90,7 @@ pub fn login(
         .json()?;
     let refresh_token = token
         .refresh_token
-        .context("Microsoft hat kein dauerhaftes Anmeldetoken zurückgegeben")?;
+        .context("Microsoft did not return a persistent sign-in token")?;
     let auth = minecraft_authenticate(&client, &token.access_token, &refresh_token, report)?;
     save_auth(&auth)?;
     Ok(auth)
@@ -118,7 +118,7 @@ pub fn ensure_session(client_id: &str) -> Result<AuthState> {
         .as_deref()
         .unwrap_or(&auth.microsoft_refresh_token);
     let refreshed = minecraft_authenticate(&client, &token.access_token, refresh_token, &|_| {})
-        .context("Microsoft-Sitzung konnte nicht erneuert werden")?;
+        .context("Could not refresh the Microsoft session")?;
     save_auth(&refreshed)?;
     Ok(refreshed)
 }
@@ -131,7 +131,7 @@ fn wait_for_redirect(
     let deadline = Instant::now() + StdDuration::from_secs(300);
     while Instant::now() < deadline {
         if cancelled.load(Ordering::Relaxed) {
-            bail!("Anmeldung abgebrochen")
+            bail!("Sign-in cancelled")
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
@@ -166,12 +166,12 @@ fn wait_for_redirect(
                     .get("state")
                     .is_none_or(|value| value != expected_state)
                 {
-                    bail!("Sicherheitsprüfung der Anmeldung fehlgeschlagen")
+                    bail!("Sign-in security check failed")
                 }
                 return params
                     .get("code")
                     .cloned()
-                    .context("Microsoft hat keinen Anmeldecode zurückgegeben");
+                    .context("Microsoft did not return a sign-in code");
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(StdDuration::from_millis(100))
@@ -179,7 +179,7 @@ fn wait_for_redirect(
             Err(error) => return Err(error.into()),
         }
     }
-    bail!("Zeitüberschreitung bei der Anmeldung")
+    bail!("Sign-in timed out")
 }
 
 fn parse_query(path: &str) -> std::collections::HashMap<String, String> {
@@ -218,7 +218,7 @@ fn minecraft_authenticate(
         "https://user.auth.xboxlive.com/user/authenticate",
         json!({"Properties": {"AuthMethod": "RPS", "SiteName": "user.auth.xboxlive.com", "RpsTicket": format!("d={microsoft_token}")}, "RelyingParty": "http://auth.xboxlive.com", "TokenType": "JWT"}),
     )?;
-    report("Xbox-Berechtigungen werden geprüft …".into());
+    report("Checking Xbox permissions...".into());
     let xsts: XboxResponse = post_json(
         client,
         "Xbox permissions",
@@ -229,10 +229,10 @@ fn minecraft_authenticate(
         .display_claims
         .xui
         .first()
-        .context("Das Xbox-Konto hat keine Benutzerkennung")?
+        .context("The Xbox account has no user identifier")?
         .uhs
         .clone();
-    report("Anmeldung bei Minecraft …".into());
+    report("Signing in to Minecraft...".into());
     let minecraft: MinecraftLogin = post_json(
         client,
         "Minecraft",
@@ -249,7 +249,7 @@ fn minecraft_authenticate(
         .as_array()
         .is_none_or(|items| items.is_empty())
     {
-        bail!("Dieses Microsoft-Konto besitzt Minecraft: Java Edition nicht")
+        bail!("This Microsoft account does not own Minecraft: Java Edition")
     }
     let profile: MinecraftProfile = client
         .get("https://api.minecraftservices.com/minecraft/profile")
@@ -281,13 +281,13 @@ fn post_json<T: for<'a> Deserialize<'a>>(
             match error["XErr"].as_i64() {
                 Some(2148916233) => {
                     bail!(
-                        "Ein Xbox-Profil fehlt. Bitte einmal auf xbox.com anmelden und einen Gamertag erstellen."
+                        "This account has no Xbox profile. Sign in at xbox.com once and create a gamertag."
                     )
                 }
                 Some(2148916238) => {
-                    bail!("Die Xbox-Familieneinstellungen blockieren dieses Konto.")
+                    bail!("Xbox family settings are blocking this account.")
                 }
-                Some(2148916235) => bail!("Dieses Xbox-Konto ist in deinem Land nicht verfügbar."),
+                Some(2148916235) => bail!("This Xbox account is not available in your country."),
                 _ => {}
             }
         }

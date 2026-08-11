@@ -1,3 +1,5 @@
+#![allow(linker_messages)]
+
 mod auth;
 mod instances;
 mod minecraft;
@@ -5,7 +7,9 @@ mod runtime;
 mod storage;
 
 use serde::Serialize;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
 const MICROSOFT_CLIENT_ID: &str = "6f216a95-c659-4c83-818b-a4d2c0a6e73f";
@@ -13,21 +17,24 @@ const MICROSOFT_CLIENT_ID: &str = "6f216a95-c659-4c83-818b-a4d2c0a6e73f";
 #[derive(Default)]
 struct RuntimeState {
     signing_in: AtomicBool,
-    launching: AtomicBool,
+    running_instances: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LauncherData {
     account: Option<Account>,
+    accounts: Vec<Account>,
     versions: Vec<VersionSummary>,
     latest_version: String,
     instances: Vec<instances::Instance>,
+    running_instances: Vec<String>,
     settings: storage::LauncherSettings,
     data_directory: String,
+    accent_color: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct VersionSummary {
     id: String,
@@ -35,12 +42,19 @@ struct VersionSummary {
     release_time: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Account {
     name: String,
     uuid: String,
     skin_url: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstanceStatus {
+    instance_id: String,
+    running: bool,
 }
 
 impl From<storage::AuthState> for Account {
@@ -53,15 +67,32 @@ impl From<storage::AuthState> for Account {
     }
 }
 
+impl From<storage::AccountProfile> for Account {
+    fn from(profile: storage::AccountProfile) -> Self {
+        Self {
+            name: profile.name,
+            uuid: profile.uuid,
+            skin_url: profile.skin_url,
+        }
+    }
+}
+
 #[tauri::command]
-async fn load_launcher() -> Result<LauncherData, String> {
-    run_blocking(|| {
+async fn load_launcher(state: State<'_, RuntimeState>) -> Result<LauncherData, String> {
+    let running_instances = state
+        .running_instances
+        .lock()
+        .map_err(|_| "Could not read instance status".to_owned())?
+        .iter()
+        .cloned()
+        .collect();
+    run_blocking(move || {
         let root = storage::user_data_dir()?;
         storage::prepare_storage(&root)?;
         let (manifest, versions) = minecraft::load_versions(&root)?;
         let latest_version = manifest.latest.release;
         let instances = instances::load_or_create(&root, &latest_version)?;
-        let account = storage::load_auth().ok().map(Account::from);
+        let (active_account, accounts) = storage::load_accounts(&root)?;
         let versions = versions
             .into_iter()
             .map(|version| VersionSummary {
@@ -71,12 +102,15 @@ async fn load_launcher() -> Result<LauncherData, String> {
             })
             .collect();
         Ok(LauncherData {
-            account,
+            account: active_account.map(Account::from),
+            accounts: accounts.into_iter().map(Account::from).collect(),
             versions,
             latest_version,
             instances,
+            running_instances,
             settings: storage::load_settings(&root),
             data_directory: root.to_string_lossy().to_string(),
+            accent_color: storage::windows_accent_color(),
         })
     })
     .await
@@ -84,7 +118,7 @@ async fn load_launcher() -> Result<LauncherData, String> {
 
 #[tauri::command]
 async fn sign_in(app: AppHandle, state: State<'_, RuntimeState>) -> Result<Account, String> {
-    acquire(&state.signing_in, "Eine Anmeldung läuft bereits")?;
+    acquire(&state.signing_in, "A sign-in is already in progress")?;
     let result = run_blocking(move || {
         let cancelled = AtomicBool::new(false);
         let report = |message: String| {
@@ -95,6 +129,24 @@ async fn sign_in(app: AppHandle, state: State<'_, RuntimeState>) -> Result<Accou
     .await;
     state.signing_in.store(false, Ordering::Release);
     result
+}
+
+#[tauri::command]
+async fn select_account(player_uuid: String) -> Result<Account, String> {
+    run_blocking(move || {
+        let root = storage::user_data_dir()?;
+        storage::select_account(&root, &player_uuid).map(Account::from)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn remove_account(player_uuid: String) -> Result<Option<Account>, String> {
+    run_blocking(move || {
+        let root = storage::user_data_dir()?;
+        storage::remove_account(&root, &player_uuid).map(|account| account.map(Account::from))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -138,12 +190,23 @@ async fn update_instance(
 }
 
 #[tauri::command]
-async fn delete_instance(instance_id: String) -> Result<(), String> {
+async fn delete_instance(
+    state: State<'_, RuntimeState>,
+    instance_id: String,
+) -> Result<(), String> {
+    if state
+        .running_instances
+        .lock()
+        .map_err(|_| "Could not read instance status".to_owned())?
+        .contains(&instance_id)
+    {
+        return Err("A running instance cannot be deleted".to_owned());
+    }
     run_blocking(move || {
         let root = storage::user_data_dir()?;
         let all = instances::load_or_create(&root, "unknown")?;
         if all.len() <= 1 {
-            anyhow::bail!("Die letzte Instanz kann nicht gelöscht werden");
+            anyhow::bail!("The last instance cannot be deleted");
         }
         instances::delete(&root, &instance_id)
     })
@@ -176,22 +239,38 @@ fn open_data_folder() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_system_accent() -> String {
+    storage::windows_accent_color()
+}
+
+#[tauri::command]
 async fn launch(
     app: AppHandle,
     state: State<'_, RuntimeState>,
     instance_id: String,
     version: String,
 ) -> Result<instances::Instance, String> {
-    acquire(&state.launching, "Minecraft wird bereits vorbereitet")?;
+    {
+        let mut running = state
+            .running_instances
+            .lock()
+            .map_err(|_| "Could not update instance status".to_owned())?;
+        if !running.insert(instance_id.clone()) {
+            return Err("This instance is already running".to_owned());
+        }
+    }
+
+    let operation_instance_id = instance_id.clone();
+    let operation_app = app.clone();
     let result = run_blocking(move || {
         let root = storage::user_data_dir()?;
         storage::prepare_storage(&root)?;
-        let instance = instances::load(&root, &instance_id)?;
+        let instance = instances::load(&root, &operation_instance_id)?;
         let (_, versions) = minecraft::load_versions(&root)?;
         let version_entry = versions
             .into_iter()
             .find(|item| item.id == version)
-            .ok_or_else(|| anyhow::anyhow!("Minecraft-Version {version} wurde nicht gefunden"))?;
+            .ok_or_else(|| anyhow::anyhow!("Minecraft version {version} was not found"))?;
         let auth = auth::ensure_session(MICROSOFT_CLIENT_ID)?;
         let settings = storage::load_settings(&root);
         let options = minecraft::LaunchOptions {
@@ -204,16 +283,16 @@ async fn launch(
             open_console: settings.open_console,
             client_id: MICROSOFT_CLIENT_ID.to_owned(),
         };
-        let status_app = app.clone();
+        let status_app = operation_app.clone();
         let report = move |message: String| {
             let _ = status_app.emit("status", message);
         };
-        let progress_app = app.clone();
+        let progress_app = operation_app.clone();
         let progress = move |value: f32, message: String| {
             let _ = progress_app.emit("progress", value.clamp(0.0, 1.0));
             let _ = progress_app.emit("status", message);
         };
-        minecraft::install_and_launch(
+        let child = minecraft::install_and_launch(
             &root,
             &instances::game_dir(&root, &instance),
             &version_entry,
@@ -222,11 +301,59 @@ async fn launch(
             &report,
             &progress,
         )?;
-        instances::mark_launched(&root, &instance_id, &version)
+        let updated = match instances::mark_launched(&root, &operation_instance_id, &version) {
+            Ok(instance) => instance,
+            Err(error) => {
+                report(format!(
+                    "The game is running, but its launch time could not be saved: {error}"
+                ));
+                instance
+            }
+        };
+        Ok((updated, child))
     })
     .await;
-    state.launching.store(false, Ordering::Release);
-    result
+
+    match result {
+        Ok((instance, mut child)) => {
+            let _ = app.emit(
+                "instance-status",
+                InstanceStatus {
+                    instance_id: instance_id.clone(),
+                    running: true,
+                },
+            );
+            let running = Arc::clone(&state.running_instances);
+            let monitor_app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = child.wait();
+                if let Ok(mut instances) = running.lock() {
+                    instances.remove(&instance_id);
+                }
+                let _ = monitor_app.emit(
+                    "instance-status",
+                    InstanceStatus {
+                        instance_id,
+                        running: false,
+                    },
+                );
+            });
+            Ok(instance)
+        }
+        Err(error) => {
+            if let Ok(mut instances) = state.running_instances.lock() {
+                instances.remove(&instance_id);
+            }
+            let _ = app.emit(
+                "instance-status",
+                InstanceStatus {
+                    instance_id,
+                    running: false,
+                },
+            );
+            Err(error)
+        }
+    }
 }
 
 fn acquire(flag: &AtomicBool, message: &str) -> Result<(), String> {
@@ -242,7 +369,7 @@ where
 {
     tauri::async_runtime::spawn_blocking(operation)
         .await
-        .map_err(|error| format!("Interner Fehler: {error}"))?
+        .map_err(|error| format!("Internal error: {error}"))?
         .map_err(|error| format!("{error:#}"))
 }
 
@@ -252,6 +379,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_launcher,
             sign_in,
+            select_account,
+            remove_account,
             sign_out,
             create_instance,
             update_instance,
@@ -259,6 +388,7 @@ pub fn run() {
             save_launcher_settings,
             open_instance_folder,
             open_data_folder,
+            get_system_accent,
             launch,
         ])
         .run(tauri::generate_context!())

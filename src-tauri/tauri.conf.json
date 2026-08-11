@@ -10,7 +10,7 @@
     "frontendDist": "dist"
   },
   "app": {
-    "windows": [{ "title": "Wisdom", "width": 1120, "height": 760, "minWidth": 920, "minHeight": 640, "resizable": true }],
+    "windows": [{ "title": "Wisdom", "width": 1120, "height": 760, "minWidth": 920, "minHeight": 640, "resizable": true, "theme": "Dark", "backgroundColor": "#000000" }],
     "security": { "csp": "default-src 'self'; img-src 'self' asset: https: data:; style-src 'self' 'unsafe-inline';" }
   },
   "bundle": { "active": true, "targets": "nsis", "icon": ["../assets/wisdom.ico"] }

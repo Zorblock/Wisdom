@@ -28,7 +28,7 @@ pub fn ensure_java(root: &Path, major: u32, progress: &ProgressReporter) -> Resu
         return Ok(java);
     }
     fs::create_dir_all(&java_root)?;
-    progress(0.0, format!("Java {major} wird vorbereitet …"));
+    progress(0.0, format!("Preparing Java {major}..."));
 
     let api = format!(
         "https://api.adoptium.net/v3/assets/latest/{major}/hotspot?architecture=x64&image_type=jre&os=windows&vendor=eclipse"
@@ -36,7 +36,7 @@ pub fn ensure_java(root: &Path, major: u32, progress: &ProgressReporter) -> Resu
     let release: Vec<AdoptiumRelease> = http()?.get(api).send()?.error_for_status()?.json()?;
     let package = release
         .first()
-        .context("Für diese Minecraft-Version ist keine passende Java-Laufzeit verfügbar")?
+        .context("No compatible Java runtime is available for this Minecraft version")?
         .binary
         .package
         .clone();
@@ -49,7 +49,7 @@ pub fn ensure_java(root: &Path, major: u32, progress: &ProgressReporter) -> Resu
         download_archive(&package, &archive, progress)?;
     }
     if !sha256_file(&archive)?.eq_ignore_ascii_case(&package.checksum) {
-        bail!("Prüfsumme des Java-Archivs stimmt nicht überein")
+        bail!("Java archive checksum does not match")
     }
 
     let temporary = java_root.join(format!(".{major}.installing"));
@@ -57,14 +57,14 @@ pub fn ensure_java(root: &Path, major: u32, progress: &ProgressReporter) -> Resu
         fs::remove_dir_all(&temporary)?;
     }
     fs::create_dir_all(&temporary)?;
-    progress(0.0, format!("Java {major} wird installiert …"));
+    progress(0.0, format!("Installing Java {major}..."));
     extract_zip(&archive, &temporary)?;
     if target.exists() {
         fs::remove_dir_all(&target)?;
     }
     fs::rename(&temporary, &target)?;
-    let java = find_java(&target).context("Das Java-Archiv enthält keine java.exe")?;
-    progress(1.0, format!("Java {major} ist bereit"));
+    let java = find_java(&target).context("The Java archive does not contain java.exe")?;
+    progress(1.0, format!("Java {major} is ready"));
     Ok(java)
 }
 
@@ -95,13 +95,13 @@ fn download_archive(
         };
         progress(
             amount,
-            format!("Java wird heruntergeladen · {}%", (amount * 100.0) as u32),
+            format!("Downloading Java · {}%", (amount * 100.0) as u32),
         );
     }
     let actual = format!("{:x}", hasher.finalize());
     if !actual.eq_ignore_ascii_case(&package.checksum) {
         fs::remove_file(&temporary)?;
-        bail!("Prüfsumme des Java-Downloads stimmt nicht überein")
+        bail!("Java download checksum does not match")
     }
     if destination.exists() {
         fs::remove_file(destination)?;
