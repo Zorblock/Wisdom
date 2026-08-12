@@ -64,6 +64,13 @@ pub struct ModdedLaunch {
     pub loader_version: String,
 }
 
+pub struct PreparedModdedInstallation {
+    pub profile_id: String,
+    pub loader_version: String,
+    pub java: PathBuf,
+    pub logging_argument: Option<String>,
+}
+
 pub fn check_version_support(loader: ModLoader, game_version: &str) -> Result<()> {
     match loader {
         ModLoader::Vanilla => bail!("Managed mods cannot be migrated to Vanilla"),
@@ -104,43 +111,20 @@ pub fn install_and_launch(
     report: &(dyn Fn(String) + Send + Sync),
     progress: &ProgressReporter<'_>,
 ) -> Result<ModdedLaunch> {
-    if !instance.loader.supports_mods() {
-        bail!("A mod loader was not selected");
-    }
-
-    let launcher = Launcher::new(root);
     report(format!(
         "Preparing {} for Minecraft {}...",
         instance.loader.pretty_name(),
         instance.version
     ));
-    let client = http()?;
-    let vanilla_progress = |value: f32, message: String| {
-        progress(value * 0.42, message);
-    };
-    crate::minecraft_install::install_vanilla(&client, root, &instance.version, &vanilla_progress)
-        .context("Could not install the Minecraft base version")?;
-    let vanilla = launcher
-        .load_version(&instance.version)
-        .context("Could not load the Minecraft version profile")?;
-    let java_major = vanilla
-        .java_version
-        .as_ref()
-        .map(|version| version.major_version.max(8) as u32)
-        .unwrap_or(8);
-    let java_progress = |value: f32, message: String| progress(0.42 + value * 0.04, message);
-    let java = crate::runtime::ensure_java(root, java_major, &java_progress)?;
-
-    progress(
-        0.45,
-        format!("Installing {}...", instance.loader.pretty_name()),
-    );
-    let (profile_id, loader_version) =
-        install_loader(&client, &launcher, root, instance, &java, progress)?;
+    let prepared = prepare_installation(root, instance, progress)?;
+    let launcher = Launcher::new(root);
     let version = launcher
-        .load_version(&profile_id)
-        .with_context(|| format!("Could not load the {profile_id} profile"))?;
-    let natives_dir = root.join("versions").join(&profile_id).join("natives");
+        .load_version(&prepared.profile_id)
+        .with_context(|| format!("Could not load the {} profile", prepared.profile_id))?;
+    let natives_dir = root
+        .join("versions")
+        .join(&prepared.profile_id)
+        .join("natives");
     let account = Account::Microsoft {
         username: auth.player_name.clone(),
         uuid: auth.player_uuid.clone(),
@@ -151,7 +135,7 @@ pub fn install_and_launch(
             &version,
             CoreLaunchOptions {
                 account,
-                java_executable: Some(java.clone()),
+                java_executable: Some(prepared.java.clone()),
                 game_directory: Some(game_dir.to_path_buf()),
                 natives_directory: Some(natives_dir.clone()),
                 launcher_name: "Wisdom".to_owned(),
@@ -164,7 +148,7 @@ pub fn install_and_launch(
     let mut args = Vec::new();
     args.push(format!("-Xmx{}M", options.ram_mb));
     args.extend(parse_extra_arguments(&options.jvm_args)?);
-    if let Some(logging_argument) = prepare_logging(root, &version, progress)? {
+    if let Some(logging_argument) = prepared.logging_argument {
         args.push(logging_argument);
     }
     args.extend(command.args);
@@ -214,7 +198,53 @@ pub fn install_and_launch(
         .context("Could not start modded Minecraft")?;
     Ok(ModdedLaunch {
         child,
+        loader_version: prepared.loader_version,
+    })
+}
+
+pub fn prepare_installation(
+    root: &Path,
+    instance: &Instance,
+    progress: &ProgressReporter<'_>,
+) -> Result<PreparedModdedInstallation> {
+    if !instance.loader.supports_mods() {
+        bail!("A mod loader was not selected");
+    }
+
+    let launcher = Launcher::new(root);
+    let client = http()?;
+    let vanilla_progress = |value: f32, message: String| {
+        progress(value * 0.42, message);
+    };
+    crate::minecraft_install::install_vanilla(&client, root, &instance.version, &vanilla_progress)
+        .context("Could not install the Minecraft base version")?;
+    let vanilla = launcher
+        .load_version(&instance.version)
+        .context("Could not load the Minecraft version profile")?;
+    let java_major = vanilla
+        .java_version
+        .as_ref()
+        .map(|version| version.major_version.max(8) as u32)
+        .unwrap_or(8);
+    let java_progress = |value: f32, message: String| progress(0.42 + value * 0.04, message);
+    let java = crate::runtime::ensure_java(root, java_major, &java_progress)?;
+
+    progress(
+        0.45,
+        format!("Installing {}...", instance.loader.pretty_name()),
+    );
+    let (profile_id, loader_version) =
+        install_loader(&client, &launcher, root, instance, &java, progress)?;
+    let version = launcher
+        .load_version(&profile_id)
+        .with_context(|| format!("Could not load the {profile_id} profile"))?;
+    let logging_argument = prepare_logging(root, &version, progress)?;
+    progress(1.0, format!("{} is ready.", instance.loader.pretty_name()));
+    Ok(PreparedModdedInstallation {
+        profile_id,
         loader_version,
+        java,
+        logging_argument,
     })
 }
 
@@ -269,25 +299,30 @@ fn install_loader(
                     forge::latest_for_minecraft(&versions, &instance.version)?.to_owned()
                 }
             };
-            let installer_progress = |value: f32, message: String| {
-                progress(0.46 + value * 0.12, message);
-            };
-            let installer = download_installer(
-                root,
-                "forge",
-                &loader_version,
-                &forge::installer_url(&loader_version),
-                &installer_progress,
-            )?;
-            progress(0.59, "Installing Forge...".to_owned());
-            run_loader_installer(&InstallerInvocation {
-                loader: LoaderKind::Forge,
-                java_executable: java.to_path_buf(),
-                installer_path: installer,
-                minecraft_dir: root.to_path_buf(),
-            })?;
             let profile_id = forge::forge_installed_version_id(&loader_version)?;
-            let profile = launcher.load_version(&profile_id)?;
+            let profile = match launcher.load_version(&profile_id) {
+                Ok(profile) => profile,
+                Err(_) => {
+                    let installer_progress = |value: f32, message: String| {
+                        progress(0.46 + value * 0.12, message);
+                    };
+                    let installer = download_installer(
+                        root,
+                        "forge",
+                        &loader_version,
+                        &forge::installer_url(&loader_version),
+                        &installer_progress,
+                    )?;
+                    progress(0.59, "Installing Forge...".to_owned());
+                    run_loader_installer(&InstallerInvocation {
+                        loader: LoaderKind::Forge,
+                        java_executable: java.to_path_buf(),
+                        installer_path: installer,
+                        minecraft_dir: root.to_path_buf(),
+                    })?;
+                    launcher.load_version(&profile_id)?
+                }
+            };
             let profile_progress = |value: f32, message: String| {
                 progress(0.60 + value * 0.28, message);
             };
@@ -302,26 +337,31 @@ fn install_loader(
                     neoforge::latest_for_minecraft(&versions, &instance.version)?.to_owned()
                 }
             };
-            let installer_progress = |value: f32, message: String| {
-                progress(0.46 + value * 0.12, message);
-            };
-            let installer = download_installer(
-                root,
-                "neoforge",
-                &loader_version,
-                &neoforge::installer_url(&loader_version),
-                &installer_progress,
-            )?;
-            progress(0.59, "Installing NeoForge...".to_owned());
-            run_loader_installer(&InstallerInvocation {
-                loader: LoaderKind::NeoForge,
-                java_executable: java.to_path_buf(),
-                installer_path: installer,
-                minecraft_dir: root.to_path_buf(),
-            })?;
             let profile_id =
                 neoforge::neoforge_installed_version_id(&instance.version, &loader_version);
-            let profile = launcher.load_version(&profile_id)?;
+            let profile = match launcher.load_version(&profile_id) {
+                Ok(profile) => profile,
+                Err(_) => {
+                    let installer_progress = |value: f32, message: String| {
+                        progress(0.46 + value * 0.12, message);
+                    };
+                    let installer = download_installer(
+                        root,
+                        "neoforge",
+                        &loader_version,
+                        &neoforge::installer_url(&loader_version),
+                        &installer_progress,
+                    )?;
+                    progress(0.59, "Installing NeoForge...".to_owned());
+                    run_loader_installer(&InstallerInvocation {
+                        loader: LoaderKind::NeoForge,
+                        java_executable: java.to_path_buf(),
+                        installer_path: installer,
+                        minecraft_dir: root.to_path_buf(),
+                    })?;
+                    launcher.load_version(&profile_id)?
+                }
+            };
             let profile_progress = |value: f32, message: String| {
                 progress(0.60 + value * 0.28, message);
             };

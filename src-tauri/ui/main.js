@@ -723,7 +723,7 @@ function renderModal() {
             <label id="instance-ram-wrap" class="field ${instance.ramMb ? "" : "disabled"}"><span>Memory <output id="instance-ram-output">${((instance.ramMb || state.data.settings.ramMb) / 1024).toFixed(1)} GB</output></span><input id="instance-ram" type="range" min="1024" max="16384" step="512" value="${instance.ramMb || state.data.settings.ramMb}" ${instance.ramMb ? "" : "disabled"} /></label>
             <details class="advanced"><summary>Advanced launch options</summary><div class="advanced-fields"><label class="field"><span>JVM arguments</span><input id="instance-jvm" value="${escapeHtml(instance.jvmArgs || "")}" placeholder="Use global setting" /></label><label class="field"><span>Game arguments</span><input id="instance-game" value="${escapeHtml(instance.gameArgs || "")}" placeholder="Use global setting" /></label></div></details>
           ` : ""}
-          <div class="modal-footer">${editing && !isRunning(instance.id) ? `<button id="delete-instance" type="button" class="button text-danger" ${state.busy ? "disabled" : ""}>${icon("trash")}Delete instance</button>` : ""}<span></span><button type="button" data-close-modal class="button secondary">Cancel</button><button type="submit" class="button primary" ${state.busy ? "disabled" : ""}>${editing ? "Save changes" : "Create instance"}</button></div>
+          <div class="modal-footer">${editing && !isRunning(instance.id) ? `<button id="delete-instance" type="button" class="button text-danger" ${state.busy ? "disabled" : ""}>${icon("trash")}Delete instance</button>` : ""}<span></span><button type="button" data-close-modal class="button secondary">Cancel</button><button id="instance-submit" type="submit" class="button primary" ${state.busy ? "disabled" : ""}>${editing ? "Save changes" : "Create instance"}</button></div>
         </form>
       </section>
     </div>`;
@@ -1101,7 +1101,14 @@ async function saveInstance(event) {
   const version = document.querySelector("#instance-version").value;
   const loader = document.querySelector("#instance-loader").value;
   if (!name) return;
-  state.busy = "save";
+  state.busy = editing ? "save" : "create";
+  if (!editing) {
+    state.progress = 0;
+    state.transferRate = "";
+    state.status = `Installing Minecraft ${version}...`;
+    event.currentTarget.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+    updateStatusDom();
+  }
   try {
     let instance;
     if (editing) {
@@ -1144,7 +1151,11 @@ async function saveInstance(event) {
     state.selectedVersion = instance.version;
     state.modal = null;
     state.status = "Ready to play.";
+    state.progress = 0;
+    state.transferRate = "";
   } catch (error) {
+    state.progress = 0;
+    state.transferRate = "";
     fail(editing ? "Could not save instance" : "Could not create instance", error);
   } finally {
     state.busy = null;
@@ -1297,11 +1308,16 @@ function updateStatusDom() {
   const progress = document.querySelector("#progress-fill");
   const metrics = document.querySelector("#activity-metrics");
   const playProgress = document.querySelector("#play-progress-label");
+  const instanceSubmit = document.querySelector("#instance-submit");
   if (text) text.textContent = state.status;
   if (progress) progress.style.width = `${Math.round(state.progress * 100)}%`;
   const summary = `${Math.round(state.progress * 100)}%${state.transferRate ? ` · ${state.transferRate}` : ""}`;
-  if (metrics) metrics.textContent = state.busy?.startsWith("launch:") ? summary : "";
+  if (metrics) metrics.textContent = state.busy?.startsWith("launch:") || state.busy === "create" ? summary : "";
   if (playProgress) playProgress.textContent = summary;
+  if (instanceSubmit && state.busy === "create") {
+    instanceSubmit.disabled = true;
+    instanceSubmit.innerHTML = `<span class="spinner"></span>Installing ${Math.round(state.progress * 100)}%`;
+  }
 }
 
 function cleanConsoleMessage(value) {

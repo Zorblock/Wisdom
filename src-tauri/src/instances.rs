@@ -133,6 +133,13 @@ pub fn mark_modded_launched(
     Ok(instance)
 }
 
+pub fn mark_prepared(root: &Path, id: &str, loader_version: Option<String>) -> Result<Instance> {
+    let mut instance = load(root, id)?;
+    instance.loader_version = loader_version;
+    save(root, &instance)?;
+    Ok(instance)
+}
+
 pub fn delete(root: &Path, id: &str) -> Result<()> {
     if !valid_id(id) {
         bail!("Invalid instance ID");

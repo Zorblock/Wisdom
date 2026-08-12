@@ -55,6 +55,25 @@ pub fn install_profile(
         download_core_plan(client_http, asset_plan, "game assets", &asset_progress)?;
     }
 
+    if let Some(logging) = version.logging.get("client") {
+        let logging_progress = |value: f32, message: String| {
+            progress(0.97 + value * 0.01, message);
+        };
+        download_jobs(
+            client_http,
+            vec![DownloadJob {
+                url: logging.file.url.clone(),
+                destination: minecraft_dir
+                    .join("assets")
+                    .join("log_configs")
+                    .join(&logging.file.id),
+                checksum: Some(Checksum::Sha1(logging.file.sha1.clone())),
+            }],
+            "log configuration",
+            &logging_progress,
+        )?;
+    }
+
     progress(0.98, "Extracting Windows components...".to_owned());
     natives::extract_natives_for_platform(&version.libraries, minecraft_dir, version_id, platform)?;
     progress(1.0, format!("Minecraft {version_id} is ready."));

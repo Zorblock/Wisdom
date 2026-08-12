@@ -5,6 +5,7 @@ mod content_commands;
 mod downloads;
 mod instance_logs;
 mod instance_migration;
+mod instance_setup;
 mod instances;
 mod minecraft;
 mod minecraft_install;
@@ -212,6 +213,7 @@ fn sign_out() -> Result<(), String> {
 
 #[tauri::command]
 async fn create_instance(
+    app: AppHandle,
     name: String,
     version: String,
     loader: modloaders::ModLoader,
@@ -220,7 +222,24 @@ async fn create_instance(
         let root = storage::user_data_dir()?;
         storage::prepare_storage(&root)?;
         let all = instances::load_all(&root)?;
-        instances::create(&root, &name, &version, loader, &all)
+        let instance = instances::create(&root, &name, &version, loader, &all)?;
+        let progress_app = app.clone();
+        let progress = move |value: f32, message: String| {
+            let _ = progress_app.emit("progress", value.clamp(0.0, 1.0));
+            let _ = progress_app.emit("status", message);
+        };
+        match instance_setup::prepare(&root, &instance, &progress) {
+            Ok(instance) => Ok(instance),
+            Err(error) => {
+                let cleanup_error = instances::delete(&root, &instance.id).err();
+                if let Some(cleanup_error) = cleanup_error {
+                    anyhow::bail!(
+                        "Could not prepare the instance: {error}. The incomplete instance could not be removed: {cleanup_error}"
+                    );
+                }
+                Err(error.context("Could not prepare the instance"))
+            }
+        }
     })
     .await
 }
