@@ -35,10 +35,10 @@ const state = {
 document.addEventListener("contextmenu", openContextMenu);
 
 document.addEventListener("click", (event) => {
-  const instanceSettings = event.target.closest("#edit-instance");
-  if (instanceSettings) {
+  const modalTrigger = event.target.closest("[data-open-modal]");
+  if (modalTrigger) {
     event.preventDefault();
-    openModal("edit");
+    openModal(modalTrigger.dataset.openModal);
   }
   if (!event.target.closest(".custom-select, .version-field")) closeCustomSelects();
   if (state.contextMenu && !event.target.closest(".context-menu")) {
@@ -478,7 +478,7 @@ function shell(content) {
           <button class="nav-item ${state.page === "settings" ? "active" : ""}" data-page="settings">${icon("settings")}<span>Settings</span></button>
         </nav>
         <div class="sidebar-section">
-          <div class="sidebar-label"><span>Instances</span><button id="sidebar-add" class="mini-button" aria-label="Create instance">${icon("plus")}</button></div>
+          <div class="sidebar-label"><span>Instances</span><button id="sidebar-add" type="button" class="mini-button" data-open-modal="create" aria-label="Create instance">${icon("plus")}</button></div>
           <div class="instance-nav">
             ${state.data.instances.map((instance) => `
               <button class="instance-nav-item ${instance.id === state.activeId && (state.page === "library" || state.page === "mods") ? "active" : ""}" data-instance="${escapeHtml(instance.id)}">
@@ -495,7 +495,7 @@ function shell(content) {
             </button>
             ${renderAccountMenu()}
           ` : `
-            <button id="signin" class="signin-card">${icon("user")}<strong>Add account</strong>${icon("chevron")}</button>
+            <button id="signin" class="signin-card">${icon("user")}<strong>Sign in to Minecraft</strong>${icon("chevron")}</button>
           `}
         </div>
       </aside>
@@ -518,13 +518,13 @@ function renderLibrary() {
     return `
       <header class="topbar">
         <h1>Library</h1>
-        <button id="new-instance" class="button secondary">${icon("plus")}New instance</button>
+        <button id="new-instance" type="button" class="button secondary" data-open-modal="create">${icon("plus")}New instance</button>
       </header>
       <div class="content-scroll empty-library-wrap">
         <section class="empty-library">
           <span class="empty-library-icon">${icon("instance")}</span>
           <h2>No instances</h2>
-          <button id="empty-create" class="button primary">${icon("plus")}Create instance</button>
+          <button id="empty-create" type="button" class="button primary" data-open-modal="create">${icon("plus")}Create instance</button>
         </section>
       </div>`;
   }
@@ -535,7 +535,7 @@ function renderLibrary() {
   return `
     <header class="topbar">
       <h1>Library</h1>
-      <button id="new-instance" class="button secondary">${icon("plus")}New instance</button>
+      <button id="new-instance" type="button" class="button secondary" data-open-modal="create">${icon("plus")}New instance</button>
     </header>
     <div class="content-scroll">
       <section class="launch-surface">
@@ -545,7 +545,7 @@ function renderLibrary() {
         <div class="launch-controls">
           ${instance.loader === "vanilla" ? `<div class="version-field"><span>Version</span>${customSelect("launch-version", selectedVersion, versionOptions(selectedVersion), "Minecraft version")}</div>` : `<div class="version-field fixed-version"><span>${escapeHtml(loaderLabel(instance.loader))}</span><strong>${escapeHtml(instance.version)}</strong></div>`}
           <button id="primary-action" class="button play-button ${running ? "running" : ""}" ${state.busy || running ? "disabled" : ""}>
-            ${launching ? `<span class="spinner"></span><span><strong>Starting</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : running ? `${icon("check")}<span><strong>Running</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : `${icon(account ? "play" : "spark")}<span><strong>${account ? "Play" : "Add account"}</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>`}
+            ${launching ? `<span class="spinner"></span><span><strong>Starting</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : running ? `${icon("check")}<span><strong>Running</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : account ? `${icon("play")}<span><strong>Play</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : `${icon("spark")}<span><strong>Minecraft account required</strong><small>Sign in to play</small></span>`}
           </button>
         </div>
       </section>
@@ -554,7 +554,7 @@ function renderLibrary() {
         <div class="section-heading"><h3>Instance</h3></div>
         <div class="instance-tools">
           ${instance.loader !== "vanilla" ? `<button id="manage-mods" class="instance-tool">${icon("mods")}<span><strong>Mods</strong><small>Manage content and updates</small></span>${icon("chevron")}</button>` : ""}
-          <button id="edit-instance" type="button" class="instance-tool">${icon("settings")}<span><strong>Settings</strong><small>Version, loader and memory</small></span>${icon("chevron")}</button>
+          <button id="edit-instance" type="button" class="instance-tool" data-open-modal="edit">${icon("settings")}<span><strong>Settings</strong><small>Version, loader and memory</small></span>${icon("chevron")}</button>
           <button id="open-instance" class="instance-tool">${icon("folder")}<span><strong>Folder</strong><small>Open instance files</small></span>${icon("chevron")}</button>
           ${running && state.data.settings.openConsole ? `<button id="open-console" class="instance-tool">${icon("terminal")}<span><strong>Console</strong><small>View the running game</small></span>${icon("chevron")}</button>` : ""}
         </div>
@@ -724,9 +724,6 @@ function bindEvents() {
     render();
   }));
   document.querySelectorAll("[data-context-action]").forEach((button) => button.addEventListener("click", handleContextAction));
-  document.querySelector("#new-instance")?.addEventListener("click", () => openModal("create"));
-  document.querySelector("#empty-create")?.addEventListener("click", () => openModal("create"));
-  document.querySelector("#sidebar-add")?.addEventListener("click", () => openModal("create"));
   document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", () => openModal(null)));
   document.querySelector("#instance-form")?.addEventListener("submit", saveInstance);
   document.querySelector("#delete-instance")?.addEventListener("click", () => openModal("delete"));
