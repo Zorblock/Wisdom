@@ -149,42 +149,52 @@ struct LoggingClient {
 
 pub fn load_versions(root: &Path) -> Result<(VersionManifest, Vec<ManifestVersion>)> {
     let cache = root.join("cache").join("version_manifest_v2.json");
+    // Startup must never wait on the network when a usable catalog exists.
+    // A fresh copy is fetched by `refresh_versions` after the UI is interactive.
+    let manifest = match read_json::<VersionManifest>(&cache) {
+        Ok(manifest) => manifest,
+        Err(_) => download_version_manifest(&cache)?,
+    };
+    Ok((manifest.clone(), visible_versions(&manifest)))
+}
+
+pub fn refresh_versions(root: &Path) -> Result<(VersionManifest, Vec<ManifestVersion>)> {
+    let cache = root.join("cache").join("version_manifest_v2.json");
     let cache_is_fresh = fs::metadata(&cache)
         .and_then(|metadata| metadata.modified())
         .ok()
         .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-        .is_some_and(|age| age < Duration::from_secs(60 * 60));
-    let cached_manifest = read_json::<VersionManifest>(&cache).ok();
-    let manifest = if let (true, Some(manifest)) = (cache_is_fresh, cached_manifest.as_ref()) {
-        manifest.clone()
-    } else {
-        match http()?
-            .get(MANIFEST_URL)
-            .send()
-            .and_then(|response| response.error_for_status())
-        {
-            Ok(response) => {
-                let manifest: VersionManifest = response.json()?;
-                let temporary = cache.with_extension("download");
-                fs::write(&temporary, serde_json::to_vec(&manifest)?)?;
-                replace_file(&temporary, &cache)?;
-                manifest
-            }
-            Err(error) => match cached_manifest {
-                Some(manifest) => manifest,
-                None => {
-                    return Err(error).context("Could not load the Minecraft version list");
-                }
-            },
-        }
-    };
+        .is_some_and(|age| age < Duration::from_secs(10 * 60));
+    if cache_is_fresh
+        && let Ok(manifest) = read_json::<VersionManifest>(&cache)
+    {
+        return Ok((manifest.clone(), visible_versions(&manifest)));
+    }
+    let manifest = download_version_manifest(&cache)?;
+    Ok((manifest.clone(), visible_versions(&manifest)))
+}
+
+fn download_version_manifest(cache: &Path) -> Result<VersionManifest> {
+    let manifest = http()?
+        .get(MANIFEST_URL)
+        .send()
+        .and_then(|response| response.error_for_status())
+        .context("Could not refresh the Minecraft version list")?
+        .json::<VersionManifest>()?;
+    let temporary = cache.with_extension("download");
+    fs::write(&temporary, serde_json::to_vec(&manifest)?)?;
+    replace_file(&temporary, cache)?;
+    Ok(manifest)
+}
+
+fn visible_versions(manifest: &VersionManifest) -> Vec<ManifestVersion> {
     let list = manifest
         .versions
         .iter()
         .filter(|v| v.kind == "release" || v.kind == "snapshot")
         .cloned()
         .collect();
-    Ok((manifest, list))
+    list
 }
 
 pub fn install_and_launch(

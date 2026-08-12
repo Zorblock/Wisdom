@@ -35,6 +35,11 @@ const state = {
 document.addEventListener("contextmenu", openContextMenu);
 
 document.addEventListener("click", (event) => {
+  const instanceSettings = event.target.closest("#edit-instance");
+  if (instanceSettings) {
+    event.preventDefault();
+    openModal("edit");
+  }
   if (!event.target.closest(".custom-select, .version-field")) closeCustomSelects();
   if (state.contextMenu && !event.target.closest(".context-menu")) {
     dismissContextMenu();
@@ -549,7 +554,7 @@ function renderLibrary() {
         <div class="section-heading"><h3>Instance</h3></div>
         <div class="instance-tools">
           ${instance.loader !== "vanilla" ? `<button id="manage-mods" class="instance-tool">${icon("mods")}<span><strong>Mods</strong><small>Manage content and updates</small></span>${icon("chevron")}</button>` : ""}
-          <button id="edit-instance" class="instance-tool">${icon("settings")}<span><strong>Settings</strong><small>Version, loader and memory</small></span>${icon("chevron")}</button>
+          <button id="edit-instance" type="button" class="instance-tool">${icon("settings")}<span><strong>Settings</strong><small>Version, loader and memory</small></span>${icon("chevron")}</button>
           <button id="open-instance" class="instance-tool">${icon("folder")}<span><strong>Folder</strong><small>Open instance files</small></span>${icon("chevron")}</button>
           ${running && state.data.settings.openConsole ? `<button id="open-console" class="instance-tool">${icon("terminal")}<span><strong>Console</strong><small>View the running game</small></span>${icon("chevron")}</button>` : ""}
         </div>
@@ -672,7 +677,7 @@ function renderModal() {
             <label id="instance-ram-wrap" class="field ${instance.ramMb ? "" : "disabled"}"><span>Memory <output id="instance-ram-output">${((instance.ramMb || state.data.settings.ramMb) / 1024).toFixed(1)} GB</output></span><input id="instance-ram" type="range" min="1024" max="16384" step="512" value="${instance.ramMb || state.data.settings.ramMb}" ${instance.ramMb ? "" : "disabled"} /></label>
             <details class="advanced"><summary>Advanced launch options</summary><div class="advanced-fields"><label class="field"><span>JVM arguments</span><input id="instance-jvm" value="${escapeHtml(instance.jvmArgs || "")}" placeholder="Use global setting" /></label><label class="field"><span>Game arguments</span><input id="instance-game" value="${escapeHtml(instance.gameArgs || "")}" placeholder="Use global setting" /></label></div></details>
           ` : ""}
-          <div class="modal-footer">${editing && !isRunning(instance.id) ? `<button id="delete-instance" type="button" class="button text-danger">${icon("trash")}Delete instance</button>` : ""}<span></span><button type="button" data-close-modal class="button secondary">Cancel</button><button type="submit" class="button primary">${editing ? "Save changes" : "Create instance"}</button></div>
+          <div class="modal-footer">${editing && !isRunning(instance.id) ? `<button id="delete-instance" type="button" class="button text-danger" ${state.busy ? "disabled" : ""}>${icon("trash")}Delete instance</button>` : ""}<span></span><button type="button" data-close-modal class="button secondary">Cancel</button><button type="submit" class="button primary" ${state.busy ? "disabled" : ""}>${editing ? "Save changes" : "Create instance"}</button></div>
         </form>
       </section>
     </div>`;
@@ -722,7 +727,6 @@ function bindEvents() {
   document.querySelector("#new-instance")?.addEventListener("click", () => openModal("create"));
   document.querySelector("#empty-create")?.addEventListener("click", () => openModal("create"));
   document.querySelector("#sidebar-add")?.addEventListener("click", () => openModal("create"));
-  document.querySelector("#edit-instance")?.addEventListener("click", () => openModal("edit"));
   document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", () => openModal(null)));
   document.querySelector("#instance-form")?.addEventListener("submit", saveInstance);
   document.querySelector("#delete-instance")?.addEventListener("click", () => openModal("delete"));
@@ -769,7 +773,6 @@ function updateLaunchBehavior(event) {
 }
 
 function openModal(modal) {
-  if (state.busy) return;
   dismissContextMenu(false);
   state.accountMenu = false;
   if (modal !== "migration") state.pendingMigration = null;
@@ -1493,9 +1496,22 @@ async function init() {
     state.selectedVersion = initialInstance?.version || null;
     state.status = initialInstance ? "Ready to play." : "No instances.";
     render();
+    void refreshVersionCatalog();
   } catch (error) {
     app.innerHTML = `<div class="fatal"><h1>Wisdom could not start</h1><p>${escapeHtml(cleanError(error))}</p><button id="retry" class="button primary">Try again</button></div>`;
     document.querySelector("#retry").addEventListener("click", () => location.reload());
+  }
+}
+
+async function refreshVersionCatalog() {
+  try {
+    const catalog = await invoke("refresh_version_catalog");
+    if (!state.data || !catalog?.versions?.length) return;
+    state.data.versions = catalog.versions;
+    state.data.latestVersion = catalog.latestVersion;
+  } catch (error) {
+    // The cached catalog keeps the launcher fully usable while offline.
+    console.warn("Minecraft version catalog could not be refreshed", error);
   }
 }
 

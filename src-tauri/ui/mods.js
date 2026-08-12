@@ -23,6 +23,15 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
   };
   let searchTimer;
 
+  const actionCopy = {
+    install: { label: "Installing", detail: "Resolving the compatible version and required dependencies" },
+    remove: { label: "Removing", detail: "Removing the mod and unused dependencies" },
+    update: { label: "Updating", detail: "Downloading the compatible update and checking dependencies" },
+    updateAll: { label: "Updating mods", detail: "Applying every compatible update" },
+    enable: { label: "Enabling", detail: "Activating the managed mod file" },
+    disable: { label: "Disabling", detail: "Deactivating the managed mod file" },
+  };
+
   const loaderName = (loader) => ({ fabric: "Fabric", quilt: "Quilt", forge: "Forge", neoforge: "NeoForge" })[loader] || "Vanilla";
   const sortOptions = [
     { value: "name", label: "Name" },
@@ -116,11 +125,12 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     if (!state.mods.length) return `<div class="mods-empty">No managed mods installed.</div>`;
     if (!visible.length) return `<div class="mods-empty">No mods match these filters.</div>`;
     return visible.map((item) => {
+      const activeAction = state.action?.projectId === item.projectId ? state.action : null;
       const relation = item.explicit
         ? `${item.dependencyCount ? `${item.dependencyCount} required ${item.dependencyCount === 1 ? "dependency" : "dependencies"}` : "Direct install"}`
         : `Dependency${item.requiredByCount ? ` required by ${item.requiredByCount}` : ""}`;
       return `
-        <article class="managed-mod ${item.enabled ? "" : "disabled-mod"} ${item.compatible && !item.missing ? "" : "attention"}">
+        <article class="managed-mod ${item.enabled ? "" : "disabled-mod"} ${item.compatible && !item.missing ? "" : "attention"} ${activeAction ? "mod-action-active" : ""}">
           <span class="mod-project-icon">${projectIcon(item.iconUrl, item.title)}</span>
           <span class="mod-copy">
             <strong>${escapeHtml(item.title)}</strong>
@@ -128,15 +138,18 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
             <span title="${escapeHtml(item.fileName)}">${escapeHtml(item.fileName)} &middot; ${formatSize(item.fileSize)}</span>
           </span>
           <span class="mod-state">
+            ${activeAction ? `<span class="mod-tag action-tag"><span class="spinner"></span>${escapeHtml(activeAction.label)}&hellip;</span>` : ""}
             ${!item.enabled ? `<span class="mod-tag">Disabled</span>` : ""}
             ${item.missing ? `<span class="mod-tag warning">Missing file</span>` : ""}
             ${!item.compatible ? `<span class="mod-tag warning">Incompatible</span>` : ""}
             ${item.updateAvailable ? `<span class="mod-tag update">${escapeHtml(item.latestVersionNumber || "Update")}</span>` : ""}
           </span>
           <span class="mod-actions">
-            <button class="icon-button" data-toggle-mod="${escapeHtml(item.projectId)}" data-enable="${!item.enabled}" title="${item.enabled ? "Disable" : "Enable"} mod" aria-label="${item.enabled ? "Disable" : "Enable"} ${escapeHtml(item.title)}" ${locked || item.missing ? "disabled" : ""}>${icon("power")}</button>
-            ${(item.updateAvailable || item.missing) ? `<button class="icon-button" data-update-mod="${escapeHtml(item.projectId)}" title="${item.missing ? "Repair" : "Update"} mod" aria-label="Update ${escapeHtml(item.title)}" ${locked ? "disabled" : ""}>${icon("refresh")}</button>` : ""}
-            ${item.explicit ? `<button class="icon-button danger-icon" data-remove-mod="${escapeHtml(item.projectId)}" title="Remove mod and unused dependencies" aria-label="Remove ${escapeHtml(item.title)}" ${locked ? "disabled" : ""}>${icon("trash")}</button>` : ""}
+            ${activeAction ? `<span class="mod-action-spinner" role="status" aria-label="${escapeHtml(activeAction.label)} ${escapeHtml(item.title)}"><span class="spinner"></span></span>` : `
+              <button class="icon-button" data-toggle-mod="${escapeHtml(item.projectId)}" data-enable="${!item.enabled}" title="${item.enabled ? "Disable" : "Enable"} mod" aria-label="${item.enabled ? "Disable" : "Enable"} ${escapeHtml(item.title)}" ${locked || item.missing ? "disabled" : ""}>${icon("power")}</button>
+              ${(item.updateAvailable || item.missing) ? `<button class="icon-button" data-update-mod="${escapeHtml(item.projectId)}" title="${item.missing ? "Repair" : "Update"} mod" aria-label="Update ${escapeHtml(item.title)}" ${locked ? "disabled" : ""}>${icon("refresh")}</button>` : ""}
+              ${item.explicit ? `<button class="icon-button danger-icon" data-remove-mod="${escapeHtml(item.projectId)}" title="Remove mod and unused dependencies" aria-label="Remove ${escapeHtml(item.title)}" ${locked ? "disabled" : ""}>${icon("trash")}</button>` : ""}
+            `}
           </span>
         </article>`;
     }).join("");
@@ -149,10 +162,10 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     const installed = installedIds();
     return state.results.map((item) => {
       const isInstalled = installed.has(item.projectId);
-      const isBusy = state.action === item.projectId;
+      const activeAction = state.action?.projectId === item.projectId ? state.action : null;
       const categories = (item.categories || []).slice(0, 3).map((category) => `<span>${escapeHtml(category.replaceAll("-", " "))}</span>`).join("");
       return `
-        <article class="modrinth-result">
+        <article class="modrinth-result ${activeAction ? "mod-action-active" : ""}">
           <span class="mod-project-icon">${projectIcon(item.iconUrl, item.title)}</span>
           <span class="mod-copy">
             <strong>${escapeHtml(item.title)}</strong>
@@ -160,8 +173,8 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
             <span>by ${escapeHtml(item.author)} &middot; ${Number(item.downloads || 0).toLocaleString("en-US")} downloads</span>
             ${categories ? `<span class="result-categories">${categories}</span>` : ""}
           </span>
-          <button class="button ${isInstalled ? "secondary" : "primary"}" data-install-mod="${escapeHtml(item.projectId)}" ${isInstalled || locked ? "disabled" : ""}>
-            ${isBusy ? `<span class="spinner"></span>` : icon(isInstalled ? "check" : "download")}${isInstalled ? "Installed" : "Install"}
+          <button class="button ${isInstalled ? "secondary" : "primary"} ${activeAction ? "action-button" : ""}" data-install-mod="${escapeHtml(item.projectId)}" ${isInstalled || locked ? "disabled" : ""} aria-live="polite">
+            ${activeAction ? `<span class="spinner"></span>${escapeHtml(activeAction.label)}&hellip;` : `${icon(isInstalled ? "check" : "download")}${isInstalled ? "Installed" : "Install"}`}
           </button>
         </article>`;
     }).join("");
@@ -174,13 +187,14 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     return `
       <header class="topbar mods-topbar">
         <div><button id="mods-back" class="icon-button" aria-label="Back to instance" title="Back">${icon("back")}</button><h1>Mods</h1></div>
-        <button id="update-all-mods" class="button secondary" ${!updateCount || state.action || running ? "disabled" : ""}>${icon("refresh")}Update all${updateCount ? ` (${updateCount})` : ""}</button>
+        <button id="update-all-mods" class="button secondary" ${!updateCount || state.action || running ? "disabled" : ""}>${state.action?.kind === "updateAll" ? `<span class="spinner"></span>Updating&hellip;` : `${icon("refresh")}Update all${updateCount ? ` (${updateCount})` : ""}`}</button>
       </header>
       <div class="content-scroll mods-content">
         <section class="mods-instance-bar">
           <span><strong>${escapeHtml(instance.name)}</strong><small>Minecraft ${escapeHtml(instance.version)} &middot; ${loaderName(instance.loader)} &middot; ${enabledCount}/${state.mods.length} enabled</small></span>
-          <button id="refresh-mods" class="icon-button" title="Refresh mods and updates" aria-label="Refresh mods" ${state.action ? "disabled" : ""}>${icon("refresh")}</button>
+          <button id="refresh-mods" class="icon-button" title="Refresh mods and updates" aria-label="${state.loadingMods ? "Refreshing mods" : "Refresh mods"}" ${state.action || state.loadingMods ? "disabled" : ""}>${state.loadingMods ? `<span class="spinner"></span>` : icon("refresh")}</button>
         </section>
+        ${state.action ? `<div class="mods-action-feedback" role="status" aria-live="polite"><span class="spinner"></span><span><strong>${escapeHtml(state.action.label)}${state.action.title ? ` ${escapeHtml(state.action.title)}` : ""}&hellip;</strong><small>${escapeHtml(state.action.detail)}</small></span></div>` : ""}
         ${running ? `<div class="mods-running-note">${icon("warning")}<span>Stop Minecraft to install, update, enable, disable, or remove mods.</span></div>` : ""}
         ${state.error ? `<div class="mods-error">${icon("warning")}<span>${escapeHtml(state.error)}</span></div>` : ""}
         <section class="mods-section">
@@ -255,16 +269,25 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     }
   }
 
-  async function runAction(command, projectId, successMessage, extra = {}) {
+  async function runAction(command, kind, projectId, successMessage, extra = {}) {
     const instance = getInstance();
     if (!instance || state.action) return;
     if (isRunning(instance.id)) {
       notify("Stop Minecraft before changing installed mods.", "error");
       return;
     }
-    state.action = projectId || "all";
+    const copy = actionCopy[kind] || { label: "Working", detail: "Applying changes" };
+    const item = state.mods.find((mod) => mod.projectId === projectId)
+      || state.results.find((mod) => mod.projectId === projectId);
+    state.action = {
+      kind,
+      projectId: projectId || null,
+      title: kind === "updateAll" ? "" : (item?.title || "mod"),
+      label: copy.label,
+      detail: copy.detail,
+    };
     state.error = null;
-    setStatus("Applying mod changes...");
+    setStatus(`${copy.label}${state.action.title ? ` ${state.action.title}` : ""}...`);
     rerender();
     try {
       const args = { instanceId: instance.id, ...extra };
@@ -275,6 +298,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     } catch (error) {
       state.error = cleanError(error);
       notify(state.error, "error");
+      setStatus(`Action failed: ${state.error}`);
     } finally {
       state.action = null;
       rerender();
@@ -284,11 +308,11 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
   function bind() {
     document.querySelector("#mods-back")?.addEventListener("click", goBack);
     document.querySelector("#refresh-mods")?.addEventListener("click", () => loadMods(true));
-    document.querySelector("#update-all-mods")?.addEventListener("click", () => runAction("update_all_modrinth_mods", null, "Mods updated."));
-    document.querySelectorAll("[data-install-mod]").forEach((button) => button.addEventListener("click", () => runAction("install_modrinth_mod", button.dataset.installMod, "Mod and required dependencies installed.")));
-    document.querySelectorAll("[data-remove-mod]").forEach((button) => button.addEventListener("click", () => runAction("remove_modrinth_mod", button.dataset.removeMod, "Mod and unused dependencies removed.")));
-    document.querySelectorAll("[data-update-mod]").forEach((button) => button.addEventListener("click", () => runAction("update_modrinth_mod", button.dataset.updateMod, "Mod and dependencies updated.")));
-    document.querySelectorAll("[data-toggle-mod]").forEach((button) => button.addEventListener("click", () => runAction("set_modrinth_mod_enabled", button.dataset.toggleMod, button.dataset.enable === "true" ? "Mod enabled." : "Mod disabled.", { enabled: button.dataset.enable === "true" })));
+    document.querySelector("#update-all-mods")?.addEventListener("click", () => runAction("update_all_modrinth_mods", "updateAll", null, "Mods updated."));
+    document.querySelectorAll("[data-install-mod]").forEach((button) => button.addEventListener("click", () => runAction("install_modrinth_mod", "install", button.dataset.installMod, "Mod and required dependencies installed.")));
+    document.querySelectorAll("[data-remove-mod]").forEach((button) => button.addEventListener("click", () => runAction("remove_modrinth_mod", "remove", button.dataset.removeMod, "Mod and unused dependencies removed.")));
+    document.querySelectorAll("[data-update-mod]").forEach((button) => button.addEventListener("click", () => runAction("update_modrinth_mod", "update", button.dataset.updateMod, "Mod and dependencies updated.")));
+    document.querySelectorAll("[data-toggle-mod]").forEach((button) => button.addEventListener("click", () => runAction("set_modrinth_mod_enabled", button.dataset.enable === "true" ? "enable" : "disable", button.dataset.toggleMod, button.dataset.enable === "true" ? "Mod enabled." : "Mod disabled.", { enabled: button.dataset.enable === "true" })));
     document.querySelectorAll("[data-installed-filter]").forEach((button) => button.addEventListener("click", () => { state.installedFilter = button.dataset.installedFilter; rerender(); }));
     document.querySelector("#enabled-first")?.addEventListener("change", (event) => { state.enabledFirst = event.target.checked; rerender(); });
     document.querySelector("#sort-direction")?.addEventListener("click", () => { state.sortDirection = state.sortDirection === "asc" ? "desc" : "asc"; rerender(); });

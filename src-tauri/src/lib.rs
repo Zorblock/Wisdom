@@ -49,6 +49,13 @@ struct VersionSummary {
     release_time: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VersionCatalog {
+    versions: Vec<VersionSummary>,
+    latest_version: String,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Account {
@@ -136,6 +143,26 @@ async fn load_launcher(state: State<'_, RuntimeState>) -> Result<LauncherData, S
             settings: storage::load_settings(&root),
             data_directory: root.to_string_lossy().to_string(),
             accent_color: storage::windows_accent_color(),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn refresh_version_catalog() -> Result<VersionCatalog, String> {
+    run_blocking(move || {
+        let root = storage::user_data_dir()?;
+        let (manifest, versions) = minecraft::refresh_versions(&root)?;
+        Ok(VersionCatalog {
+            versions: versions
+                .into_iter()
+                .map(|version| VersionSummary {
+                    id: version.id,
+                    kind: version.kind,
+                    release_time: version.release_time,
+                })
+                .collect(),
+            latest_version: manifest.latest.release,
         })
     })
     .await
@@ -757,6 +784,7 @@ pub fn run() {
         .manage(RuntimeState::default())
         .invoke_handler(tauri::generate_handler![
             load_launcher,
+            refresh_version_catalog,
             sign_in,
             select_account,
             remove_account,

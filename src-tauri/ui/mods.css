@@ -5,6 +5,11 @@
 .mods-instance-bar strong, .mods-instance-bar small { display: block; }
 .mods-instance-bar strong { font-size: 11px; font-weight: 620; }
 .mods-instance-bar small { margin-top: 3px; color: var(--muted-2); font-size: 8px; }
+.mods-action-feedback { display: flex; align-items: center; gap: 10px; min-height: 48px; margin-top: 10px; padding: 9px 12px; border: 1px solid rgba(var(--accent-rgb), .34); border-radius: 6px; color: var(--text); background: rgba(var(--accent-rgb), .07); }
+.mods-action-feedback > .spinner { flex: 0 0 auto; color: var(--accent); }
+.mods-action-feedback strong, .mods-action-feedback small { display: block; }
+.mods-action-feedback strong { font-size: 9px; font-weight: 620; }
+.mods-action-feedback small { margin-top: 3px; color: var(--muted); font-size: 8px; }
 .mods-section { margin-top: 26px; }
 .compatibility-note { margin: 0 0 2px auto; color: var(--muted-2); font-size: 8px; }
 
@@ -28,6 +33,7 @@
 .managed-mod, .modrinth-result { display: flex; align-items: center; gap: 12px; min-height: 66px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .managed-mod:last-child, .modrinth-result:last-child { border-bottom: 0; }
 .managed-mod.attention { background: #080604; }
+.managed-mod.mod-action-active, .modrinth-result.mod-action-active { background: rgba(var(--accent-rgb), .055); }
 .managed-mod.disabled-mod { opacity: .58; }
 .managed-mod.disabled-mod:hover { opacity: .82; }
 .mod-project-icon { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: #070707; }
@@ -42,11 +48,16 @@
 .mod-tag { padding: 4px 6px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); background: #080808; font-size: 7px; font-weight: 620; }
 .mod-tag.update { border-color: rgba(var(--accent-rgb), .35); color: var(--accent); background: rgba(var(--accent-rgb), .08); }
 .mod-tag.warning { border-color: #584125; color: #d7a865; background: #100b05; }
+.mod-tag.action-tag { display: inline-flex; align-items: center; gap: 4px; border-color: rgba(var(--accent-rgb), .38); color: var(--accent); background: rgba(var(--accent-rgb), .09); }
+.mod-tag.action-tag .spinner { width: 9px; height: 9px; margin: 0; border-width: 1px; }
 .mod-actions .icon-button { width: 30px; height: 30px; }
+.mod-action-spinner { display: grid; place-items: center; width: 30px; height: 30px; color: var(--accent); }
+.mod-action-spinner .spinner { width: 14px; height: 14px; margin: 0; }
 .danger-icon { color: var(--danger); }
 
 .modrinth-result { min-height: 80px; }
 .modrinth-result .button { min-width: 88px; }
+.modrinth-result .action-button:disabled { min-width: 112px; opacity: .86; }
 .result-categories { display: flex !important; gap: 4px; margin-top: 5px !important; }
 .result-categories > span { padding: 2px 5px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted-2); text-transform: capitalize; }
 .mods-placeholder, .mods-empty { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 82px; color: var(--muted-2); font-size: 9px; }
