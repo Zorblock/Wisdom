@@ -4,11 +4,15 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 use winreg::RegKey;
 use winreg::enums::HKEY_CURRENT_USER;
 
 const USER_AGENT: &str = "WisdomLauncher/0.1 (Windows; Rust)";
+const PUBLISHER: &str = "Zorblock";
+const PRODUCT: &str = "Wisdom";
+static USER_DATA_DIRECTORY: OnceLock<std::result::Result<PathBuf, String>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthState {
@@ -98,11 +102,113 @@ impl Default for LauncherSettings {
 }
 
 pub fn user_data_dir() -> Result<PathBuf> {
-    let app_data = std::env::var_os("APPDATA").context("APPDATA is not set")?;
-    Ok(PathBuf::from(app_data)
+    USER_DATA_DIRECTORY
+        .get_or_init(resolve_user_data_dir)
+        .clone()
+        .map_err(anyhow::Error::msg)
+}
+
+fn resolve_user_data_dir() -> std::result::Result<PathBuf, String> {
+    let local_app_data =
+        std::env::var_os("LOCALAPPDATA").ok_or_else(|| "LOCALAPPDATA is not set".to_owned())?;
+    let destination = PathBuf::from(local_app_data).join(PUBLISHER).join(PRODUCT);
+
+    if destination.exists() {
+        return Ok(destination);
+    }
+
+    let Some(roaming_app_data) = std::env::var_os("APPDATA") else {
+        return Ok(destination);
+    };
+    let legacy = PathBuf::from(roaming_app_data)
         .join("zorblock")
         .join("userData")
-        .join("Wisdom"))
+        .join(PRODUCT);
+    if !legacy.is_dir() {
+        return Ok(destination);
+    }
+
+    migrate_legacy_data(&legacy, &destination).map_err(|error| {
+        format!(
+            "Could not migrate Wisdom data from {} to {}: {error}",
+            legacy.display(),
+            destination.display()
+        )
+    })?;
+    Ok(destination)
+}
+
+fn migrate_legacy_data(source: &Path, destination: &Path) -> Result<()> {
+    let parent = destination
+        .parent()
+        .context("Wisdom data path has no parent directory")?;
+    fs::create_dir_all(parent)?;
+
+    match fs::rename(source, destination) {
+        Ok(()) => {
+            remove_empty_legacy_parents(source);
+            return Ok(());
+        }
+        Err(_) if destination.exists() => return Ok(()),
+        Err(rename_error) => {
+            let staging = parent.join(format!(".Wisdom-migration-{}", std::process::id()));
+            if staging.exists() {
+                bail!(
+                    "Migration staging directory already exists: {}",
+                    staging.display()
+                );
+            }
+            if let Err(copy_error) = copy_directory(source, &staging) {
+                let _ = fs::remove_dir_all(&staging);
+                return Err(copy_error).context(format!(
+                    "Moving the data failed ({rename_error}); copying it also failed"
+                ));
+            }
+            if let Err(commit_error) = fs::rename(&staging, destination) {
+                let _ = fs::remove_dir_all(&staging);
+                if destination.exists() {
+                    return Ok(());
+                }
+                return Err(commit_error).context("Could not commit the migrated data");
+            }
+            // The destination is complete before the old copy is removed. If cleanup
+            // fails, the new location remains usable and no user data is lost.
+            let _ = fs::remove_dir_all(source);
+            remove_empty_legacy_parents(source);
+        }
+    }
+    Ok(())
+}
+
+fn copy_directory(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let target = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_directory(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), target)?;
+        } else {
+            bail!(
+                "The legacy data contains an unsupported symbolic link: {}",
+                entry.path().display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn remove_empty_legacy_parents(source: &Path) {
+    let Some(user_data) = source.parent() else {
+        return;
+    };
+    let Some(publisher) = user_data.parent() else {
+        return;
+    };
+    let _ = fs::remove_dir(user_data);
+    let _ = fs::remove_dir(publisher);
 }
 
 pub fn windows_accent_color() -> String {
@@ -376,11 +482,48 @@ pub fn http() -> Result<Client> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_uuid;
+    use super::{migrate_legacy_data, validate_uuid};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn validates_account_ids() {
         assert!(validate_uuid("069a79f444e94726a5befca90e38aaf5").is_ok());
         assert!(validate_uuid("../credential").is_err());
+    }
+
+    #[test]
+    fn migrates_legacy_data_without_losing_nested_files() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "wisdom-storage-migration-{}-{unique}",
+            std::process::id()
+        ));
+        let source = root.join("roaming").join("Wisdom");
+        let destination = root.join("local").join("Zorblock").join("Wisdom");
+        fs::create_dir_all(source.join("instances").join("test")).unwrap();
+        fs::write(
+            source.join("instances").join("test").join("instance.json"),
+            b"migration-test",
+        )
+        .unwrap();
+
+        migrate_legacy_data(&source, &destination).unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read(
+                destination
+                    .join("instances")
+                    .join("test")
+                    .join("instance.json")
+            )
+            .unwrap(),
+            b"migration-test"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

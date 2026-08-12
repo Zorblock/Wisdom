@@ -16,7 +16,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "publisher": "zorblock",
+    "publisher": "Zorblock",
     "category": "Game",
     "shortDescription": "A clean Minecraft launcher for Windows.",
     "icon": ["../assets/wisdom.ico"],
@@ -27,6 +27,7 @@
         "silent": true
       },
       "nsis": {
+        "template": "windows/installer.nsi",
         "installerIcon": "../assets/wisdom.ico",
         "installMode": "currentUser",
         "languages": ["English"],

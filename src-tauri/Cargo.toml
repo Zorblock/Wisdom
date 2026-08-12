@@ -2,6 +2,7 @@
 name = "wisdom"
 version = "0.1.0"
 edition = "2024"
+authors = ["Zorblock"]
 
 [lib]
 name = "wisdom_lib"

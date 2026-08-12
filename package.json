@@ -2,6 +2,7 @@
   "name": "wisdom-launcher",
   "private": true,
   "version": "0.1.0",
+  "author": "Zorblock",
   "description": "Wisdom Minecraft Launcher",
   "type": "module",
   "scripts": {

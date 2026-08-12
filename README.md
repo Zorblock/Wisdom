@@ -1,8 +1,9 @@
 # Wisdom
 
-Windows Minecraft launcher written in Rust and Tauri. It stores every launcher file below
-`C:\Users\Jonas\AppData\Roaming\zorblock\userData\Wisdom` (using the current Windows user's
-Roaming profile at runtime).
+Windows Minecraft launcher written in Rust and Tauri. Program files are installed below
+`%LOCALAPPDATA%\Programs\Zorblock\Wisdom`; launcher data, Minecraft versions and instances live
+separately below `%LOCALAPPDATA%\Zorblock\Wisdom`. Existing data from the former Roaming path is
+migrated automatically on first start.
 
 ## Development
 
