@@ -1,6 +1,7 @@
 .mods-topbar > div { display: flex; align-items: center; gap: 10px; }
 .mods-topbar .icon-button { width: 32px; height: 32px; }
-.mods-content { max-width: 1000px; margin: 0 auto; padding-top: 26px; }
+.mods-content { width: 100%; max-width: none; padding-top: 26px; scrollbar-gutter: stable; }
+.mods-content > * { width: min(100%, 1000px); margin-right: auto; margin-left: auto; }
 .mods-instance-bar { display: flex; align-items: center; justify-content: space-between; min-height: 58px; padding: 10px 13px; border: 1px solid var(--line); border-radius: 7px; background: #030303; }
 .mods-instance-bar strong, .mods-instance-bar small { display: block; }
 .mods-instance-bar strong { font-size: 11px; font-weight: 620; }
@@ -32,6 +33,7 @@
 .managed-mod-list, .modrinth-results { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: #020202; }
 .modrinth-results { transition: opacity .12s ease; }
 .modrinth-results.has-results { min-height: 1920px; }
+.modrinth-results.is-loading.has-results { height: 1920px; }
 .modrinth-results.is-loading { opacity: .58; pointer-events: none; }
 .managed-mod, .modrinth-result { display: flex; align-items: center; gap: 12px; min-height: 66px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .managed-mod:last-child, .modrinth-result:last-child { border-bottom: 0; }

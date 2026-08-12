@@ -163,6 +163,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
 
   function renderSearchResults() {
     const locked = isRunning(getInstance()?.id);
+    const inventoryPending = state.loadingMods;
     if (state.searching && !state.results.length) return `<div class="mods-placeholder"><span class="spinner"></span><span>Searching Modrinth...</span></div>`;
     if (!state.results.length) return `<div class="mods-empty">No compatible mods found.</div>`;
     const installed = installedIds();
@@ -179,8 +180,8 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
             <span>by ${escapeHtml(item.author)} &middot; ${Number(item.downloads || 0).toLocaleString("en-US")} downloads</span>
             ${categories ? `<span class="result-categories">${categories}</span>` : ""}
           </span>
-          <button class="button ${isInstalled ? "secondary" : "primary"} ${activeAction ? "action-button" : ""}" data-install-mod="${escapeHtml(item.projectId)}" ${isInstalled || locked || activeAction ? "disabled" : ""} aria-live="polite">
-            ${activeAction ? `<span class="spinner"></span>${escapeHtml(actionLabel(activeAction))}` : `${icon(isInstalled ? "check" : "download")}${isInstalled ? "Installed" : "Install"}`}
+          <button class="button ${isInstalled || inventoryPending ? "secondary" : "primary"} ${activeAction ? "action-button" : ""}" data-install-mod="${escapeHtml(item.projectId)}" ${isInstalled || locked || inventoryPending || activeAction ? "disabled" : ""} ${inventoryPending && !isInstalled ? `title="Checking installed mods"` : ""} aria-live="polite">
+            ${activeAction ? `<span class="spinner"></span>${escapeHtml(actionLabel(activeAction))}` : isInstalled ? `${icon("check")}Installed` : inventoryPending ? `<span class="spinner"></span>Checking` : `${icon("download")}Install`}
           </button>
         </article>`;
     }).join("");
@@ -311,6 +312,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
       notify("Stop Minecraft before changing installed mods.", "error");
       return;
     }
+    if (state.loadingMods && kind === "install") return;
     const copy = actionCopy[kind] || { label: "Working", detail: "Applying changes" };
     const item = state.mods.find((mod) => mod.projectId === projectId)
       || state.results.find((mod) => mod.projectId === projectId);

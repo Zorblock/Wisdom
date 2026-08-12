@@ -60,25 +60,19 @@ const CALLBACK_SUCCESS_PAGE: &str = r##"<!doctype html>
   <meta name="theme-color" content="#070709">
   <title>Signed in · Wisdom</title>
   <style>
-    :root { color-scheme: dark; --accent: #0078d4; --line: #1e1e20; }
+    :root { color-scheme: dark; }
     * { box-sizing: border-box; }
     html, body { min-height: 100%; }
     body { margin: 0; display: grid; place-items: center; padding: 24px; color: #f4f4f5; background: #070709; font: 14px/1.5 "Segoe UI Variable", "Segoe UI", sans-serif; }
-    main { width: min(100%, 420px); padding: 32px; border: 1px solid var(--line); border-radius: 10px; background: #000; }
-    .mark { display: grid; place-items: center; width: 38px; height: 38px; margin-bottom: 24px; border: 1px solid color-mix(in srgb, AccentColor 55%, var(--line)); border-radius: 8px; color: AccentColor; background: color-mix(in srgb, AccentColor 10%, #000); }
-    svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    main { width: min(100%, 390px); }
     h1 { margin: 0 0 7px; font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
     p { margin: 0; color: #94949c; }
-    .app { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--line); color: #62626a; font-size: 12px; }
-    @supports not (color: AccentColor) { .mark { color: var(--accent); border-color: #18364e; background: #06121b; } }
   </style>
 </head>
 <body>
   <main>
-    <div class="mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg></div>
     <h1>Signed in</h1>
-    <p>Your Minecraft account is now connected. You can return to Wisdom and close this tab.</p>
-    <div class="app">Wisdom Launcher</div>
+    <p>Returning to Wisdom. You can close this tab.</p>
   </main>
 </body>
 </html>"##;
@@ -92,24 +86,19 @@ const CALLBACK_ERROR_PAGE: &str = r##"<!doctype html>
   <meta name="theme-color" content="#070709">
   <title>Sign-in failed · Wisdom</title>
   <style>
-    :root { color-scheme: dark; --line: #1e1e20; }
+    :root { color-scheme: dark; }
     * { box-sizing: border-box; }
     html, body { min-height: 100%; }
     body { margin: 0; display: grid; place-items: center; padding: 24px; color: #f4f4f5; background: #070709; font: 14px/1.5 "Segoe UI Variable", "Segoe UI", sans-serif; }
-    main { width: min(100%, 420px); padding: 32px; border: 1px solid var(--line); border-radius: 10px; background: #000; }
-    .mark { display: grid; place-items: center; width: 38px; height: 38px; margin-bottom: 24px; border: 1px solid #482124; border-radius: 8px; color: #ff6961; background: #19090a; }
-    svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+    main { width: min(100%, 390px); }
     h1 { margin: 0 0 7px; font-size: 22px; font-weight: 650; letter-spacing: -.02em; }
     p { margin: 0; color: #94949c; }
-    .app { margin-top: 26px; padding-top: 18px; border-top: 1px solid var(--line); color: #62626a; font-size: 12px; }
   </style>
 </head>
 <body>
   <main>
-    <div class="mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg></div>
     <h1>Sign-in failed</h1>
     <p>Wisdom could not complete the sign-in. You can close this tab and try again in the launcher.</p>
-    <div class="app">Wisdom Launcher</div>
   </main>
 </body>
 </html>"##;
@@ -117,6 +106,7 @@ const CALLBACK_ERROR_PAGE: &str = r##"<!doctype html>
 pub fn login(
     client_id: &str,
     report: &(dyn Fn(String) + Send + Sync),
+    on_browser_return: &(dyn Fn() + Send + Sync),
     cancelled: &AtomicBool,
 ) -> Result<AuthState> {
     let listener =
@@ -136,7 +126,9 @@ pub fn login(
     );
     report("Complete sign-in in your browser...".into());
     open::that(authorization_url).context("Could not open the browser")?;
-    let code = wait_for_redirect(&listener, &state, cancelled)?;
+    let code = wait_for_redirect(&listener, &state, cancelled);
+    on_browser_return();
+    let code = code?;
     report("Checking Xbox Live account...".into());
     let client = http()?;
     let token: OAuthToken = client

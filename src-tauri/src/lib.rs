@@ -3,6 +3,7 @@
 mod auth;
 mod content_commands;
 mod downloads;
+mod instance_installations;
 mod instance_logs;
 mod instance_migration;
 mod instance_setup;
@@ -30,6 +31,7 @@ pub(crate) struct RuntimeState {
     pub(crate) content_operations: Arc<Mutex<()>>,
     console_logs: Arc<Mutex<HashMap<String, VecDeque<ConsoleLine>>>>,
     main_window_hidden: Arc<AtomicBool>,
+    installations: instance_installations::InstallationManager,
 }
 
 #[derive(Serialize)]
@@ -41,6 +43,7 @@ struct LauncherData {
     latest_version: String,
     instances: Vec<instances::Instance>,
     running_instances: Vec<String>,
+    installations: Vec<instance_installations::InstallationStatus>,
     settings: storage::LauncherSettings,
     data_directory: String,
     accent_color: String,
@@ -123,6 +126,10 @@ async fn load_launcher(state: State<'_, RuntimeState>) -> Result<LauncherData, S
         .iter()
         .cloned()
         .collect();
+    let installations = state
+        .installations
+        .snapshot()
+        .map_err(|error| error.to_string())?;
     run_blocking(move || {
         let root = storage::user_data_dir()?;
         storage::prepare_storage(&root)?;
@@ -145,6 +152,7 @@ async fn load_launcher(state: State<'_, RuntimeState>) -> Result<LauncherData, S
             latest_version,
             instances,
             running_instances,
+            installations,
             settings: storage::load_settings(&root),
             data_directory: root.to_string_lossy().to_string(),
             accent_color: storage::windows_accent_color(),
@@ -178,10 +186,18 @@ async fn sign_in(app: AppHandle, state: State<'_, RuntimeState>) -> Result<Accou
     acquire(&state.signing_in, "A sign-in is already in progress")?;
     let result = run_blocking(move || {
         let cancelled = AtomicBool::new(false);
+        let return_app = app.clone();
         let report = |message: String| {
             let _ = app.emit("status", message);
         };
-        auth::login(MICROSOFT_CLIENT_ID, &report, &cancelled).map(Account::from)
+        let on_browser_return = move || {
+            if let Some(window) = return_app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        };
+        auth::login(MICROSOFT_CLIENT_ID, &report, &on_browser_return, &cancelled).map(Account::from)
     })
     .await;
     state.signing_in.store(false, Ordering::Release);
@@ -214,38 +230,50 @@ fn sign_out() -> Result<(), String> {
 #[tauri::command]
 async fn create_instance(
     app: AppHandle,
+    state: State<'_, RuntimeState>,
     name: String,
     version: String,
     loader: modloaders::ModLoader,
 ) -> Result<instances::Instance, String> {
-    run_blocking(move || {
+    let (root, instance) = run_blocking(move || {
         let root = storage::user_data_dir()?;
         storage::prepare_storage(&root)?;
         let all = instances::load_all(&root)?;
         let instance = instances::create(&root, &name, &version, loader, &all)?;
-        let progress_app = app.clone();
-        let progress = move |value: f32, message: String| {
-            let _ = progress_app.emit("progress", value.clamp(0.0, 1.0));
-            let _ = progress_app.emit("status", message);
-        };
-        match instance_setup::prepare(&root, &instance, &progress) {
-            Ok(instance) => Ok(instance),
-            Err(error) => {
-                let cleanup_error = instances::delete(&root, &instance.id).err();
-                if let Some(cleanup_error) = cleanup_error {
-                    anyhow::bail!(
-                        "Could not prepare the instance: {error}. The incomplete instance could not be removed: {cleanup_error}"
-                    );
-                }
-                Err(error.context("Could not prepare the instance"))
-            }
-        }
+        Ok((root, instance))
     })
-    .await
+    .await?;
+    if let Err(error) = state
+        .installations
+        .start(app, root.clone(), instance.clone())
+    {
+        let _ = instances::delete(&root, &instance.id);
+        return Err(error.to_string());
+    }
+    Ok(instance)
+}
+
+#[tauri::command]
+async fn prepare_instance(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    instance_id: String,
+) -> Result<(), String> {
+    let (root, instance) = run_blocking(move || {
+        let root = storage::user_data_dir()?;
+        let instance = instances::load(&root, &instance_id)?;
+        Ok((root, instance))
+    })
+    .await?;
+    state
+        .installations
+        .start(app, root, instance)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn update_instance(
+    state: State<'_, RuntimeState>,
     instance_id: String,
     name: String,
     version: String,
@@ -254,6 +282,13 @@ async fn update_instance(
     jvm_args: Option<String>,
     game_args: Option<String>,
 ) -> Result<instances::Instance, String> {
+    if state
+        .installations
+        .is_installing(&instance_id)
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Wait for the instance installation to finish".to_owned());
+    }
     run_blocking(move || {
         let root = storage::user_data_dir()?;
         let current = instances::load(&root, &instance_id)?;
@@ -284,6 +319,13 @@ async fn delete_instance(
     instance_id: String,
 ) -> Result<(), String> {
     if state
+        .installations
+        .is_installing(&instance_id)
+        .map_err(|error| error.to_string())?
+    {
+        return Err("An installing instance cannot be deleted".to_owned());
+    }
+    if state
         .running_instances
         .lock()
         .map_err(|_| "Could not read instance status".to_owned())?
@@ -291,11 +333,14 @@ async fn delete_instance(
     {
         return Err("A running instance cannot be deleted".to_owned());
     }
+    let deleted_id = instance_id.clone();
     run_blocking(move || {
         let root = storage::user_data_dir()?;
         instances::delete(&root, &instance_id)
     })
-    .await
+    .await?;
+    state.installations.remove(&deleted_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -626,6 +671,14 @@ async fn launch(
     instance_id: String,
     version: String,
 ) -> Result<instances::Instance, String> {
+    if state
+        .installations
+        .is_installing(&instance_id)
+        .map_err(|error| error.to_string())?
+    {
+        return Err("Wait for the instance installation to finish".to_owned());
+    }
+    state.installations.remove(&instance_id);
     {
         let mut running = state
             .running_instances
@@ -847,6 +900,7 @@ pub fn run() {
             remove_account,
             sign_out,
             create_instance,
+            prepare_instance,
             update_instance,
             delete_instance,
             save_launcher_settings,

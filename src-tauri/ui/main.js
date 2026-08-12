@@ -33,6 +33,7 @@ const state = {
   status: "Loading launcher...",
   progress: 0,
   transferRate: "",
+  installations: new Map(),
   toast: null,
 };
 
@@ -511,12 +512,47 @@ function formatLastPlayed(value) {
   return `Last played ${new Intl.DateTimeFormat("en-US", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(date)}`;
 }
 
+function installationFor(instanceId) {
+  return state.installations.get(instanceId) || null;
+}
+
+function installationStats(status) {
+  const message = String(status?.message || "Preparing installation...");
+  const speed = /(?:^|\s·\s)([\d.]+\s*(?:GB|MB|KB|B)\/s)(?:\s·\s|$)/i.exec(message)?.[1] || "";
+  const files = /(?:^|\s·\s)(\d+\/\d+\s+files)(?:\s·\s|$)/i.exec(message)?.[1] || "";
+  const detail = message
+    .replace(/\s*·\s*\d+%/g, "")
+    .replace(/\s*·\s*[\d.]+\s*(?:GB|MB|KB|B)\/s/gi, "")
+    .replace(/\s*·\s*\d+\/\d+\s+files/gi, "")
+    .trim();
+  return { message: detail || message, speed, files, percent: Math.round(Math.max(0, Math.min(1, Number(status?.progress) || 0)) * 100) };
+}
+
+function renderInstallation(status) {
+  if (!status) return "";
+  const failed = status.phase === "failed";
+  const stats = installationStats(status);
+  return `
+    <div class="instance-installation ${failed ? "failed" : ""}" data-installation-status="${escapeHtml(status.instanceId)}">
+      <div class="installation-heading">
+        <span class="installation-icon">${failed ? icon("warning") : `<span class="spinner"></span>`}</span>
+        <span><strong>${failed ? "Installation failed" : "Installing instance"}</strong><small id="installation-message">${escapeHtml(stats.message)}</small></span>
+        ${failed ? `<button id="retry-installation" class="button secondary">${icon("refresh")}Retry</button>` : ""}
+      </div>
+      <div class="installation-metrics">
+        <strong id="installation-percent">${stats.percent}%</strong>
+        <span id="installation-speed">${escapeHtml(stats.speed)}</span>
+        <span id="installation-files">${escapeHtml(stats.files)}</span>
+      </div>
+      <div class="installation-progress" aria-hidden="true"><span id="installation-progress-fill" style="width:${stats.percent}%"></span></div>
+    </div>`;
+}
+
 function shell(content) {
   const account = state.data.account;
   return `
     <div class="app-shell">
       <aside class="sidebar">
-        <div class="brand"><span>Wisdom</span></div>
         <nav class="primary-nav" aria-label="Main navigation">
           <button class="nav-item ${state.page === "library" ? "active" : ""}" data-page="library">${icon("library")}<span>Library</span></button>
           <button class="nav-item ${state.page === "settings" ? "active" : ""}" data-page="settings">${icon("settings")}<span>Settings</span></button>
@@ -527,8 +563,8 @@ function shell(content) {
             ${state.data.instances.map((instance) => `
               <button class="instance-nav-item ${instance.id === state.activeId && (state.page === "library" || state.page === "mods") ? "active" : ""}" data-instance="${escapeHtml(instance.id)}">
                 <span class="instance-symbol">${icon("instance")}</span>
-                <span class="instance-nav-copy"><strong>${escapeHtml(instance.name)}</strong><small>${isRunning(instance.id) ? "Running" : escapeHtml(instance.version)}</small></span>
-                ${isRunning(instance.id) ? `<span class="nav-running" title="Running"></span>` : ""}
+                <span class="instance-nav-copy"><strong>${escapeHtml(instance.name)}</strong><small data-instance-state="${escapeHtml(instance.id)}">${isRunning(instance.id) ? "Running" : installationFor(instance.id)?.phase === "installing" ? `Installing ${installationStats(installationFor(instance.id)).percent}%` : installationFor(instance.id)?.phase === "failed" ? "Installation failed" : escapeHtml(instance.version)}</small></span>
+                ${isRunning(instance.id) ? `<span class="nav-running" title="Running"></span>` : installationFor(instance.id)?.phase === "installing" ? `<span class="nav-installing" title="Installing"></span>` : ""}
               </button>`).join("")}
           </div>
         </div>
@@ -576,6 +612,8 @@ function renderLibrary() {
   const account = state.data.account;
   const running = isRunning(instance.id);
   const launching = state.busy === `launch:${instance.id}`;
+  const installation = installationFor(instance.id);
+  const installing = installation?.phase === "installing";
   return `
     <header class="topbar">
       <h1>Library</h1>
@@ -584,12 +622,13 @@ function renderLibrary() {
     <div class="content-scroll">
       <section class="launch-surface">
         <div class="instance-summary">
-          <div class="instance-heading"><h2>${escapeHtml(instance.name)}</h2><p>${running ? "Running" : escapeHtml(formatLastPlayed(instance.lastPlayed))}</p></div>
+          <div class="instance-heading"><h2>${escapeHtml(instance.name)}</h2><p>${running ? "Running" : installing ? "Installing in the background" : escapeHtml(formatLastPlayed(instance.lastPlayed))}</p></div>
         </div>
+        ${renderInstallation(installation)}
         <div class="launch-controls">
           ${instance.loader === "vanilla" ? `<div class="version-field"><span>Version</span>${customSelect("launch-version", selectedVersion, versionOptions(selectedVersion), "Minecraft version")}</div>` : `<div class="version-field fixed-version"><span>${escapeHtml(loaderLabel(instance.loader))}</span><strong>${escapeHtml(instance.version)}</strong></div>`}
-          <button id="primary-action" class="button play-button ${running ? "running" : ""}" ${state.busy || running ? "disabled" : ""}>
-            ${launching ? `<span class="spinner"></span><span><strong>Starting</strong><small id="play-progress-label">${Math.round(state.progress * 100)}%${state.transferRate ? ` · ${escapeHtml(state.transferRate)}` : ""}</small></span>` : running ? `${icon("check")}<span><strong>Running</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : account ? `${icon("play")}<span><strong>Play</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : `${icon("spark")}<span><strong>Minecraft account required</strong><small>Sign in to play</small></span>`}
+          <button id="primary-action" class="button play-button ${running ? "running" : ""}" ${state.busy || running || installing ? "disabled" : ""}>
+            ${installing ? `<span class="spinner"></span><span><strong>Installing</strong><small>${installationStats(installation).percent}% complete</small></span>` : launching ? `<span class="spinner"></span><span><strong>Starting</strong><small id="play-progress-label">${Math.round(state.progress * 100)}%${state.transferRate ? ` · ${escapeHtml(state.transferRate)}` : ""}</small></span>` : running ? `${icon("check")}<span><strong>Running</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : account ? `${icon("play")}<span><strong>${installation?.phase === "failed" ? "Repair & play" : "Play"}</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : `${icon("spark")}<span><strong>Minecraft account required</strong><small>Sign in to play</small></span>`}
           </button>
         </div>
       </section>
@@ -597,8 +636,8 @@ function renderLibrary() {
       <section class="instance-tools-section">
         <div class="section-heading"><h3>Instance</h3></div>
         <div class="instance-tools">
-          ${instance.loader !== "vanilla" ? `<button id="manage-mods" class="instance-tool">${icon("mods")}<span><strong>Mods</strong></span>${icon("chevron")}</button>` : ""}
-          <button id="edit-instance" type="button" class="instance-tool" data-open-modal="edit">${icon("settings")}<span><strong>Settings</strong></span>${icon("chevron")}</button>
+          ${instance.loader !== "vanilla" ? `<button id="manage-mods" class="instance-tool" ${installing ? "disabled" : ""}>${icon("mods")}<span><strong>Mods</strong></span>${icon("chevron")}</button>` : ""}
+          <button id="edit-instance" type="button" class="instance-tool" data-open-modal="edit" ${installing ? "disabled" : ""}>${icon("settings")}<span><strong>Settings</strong></span>${icon("chevron")}</button>
           <button id="open-instance" class="instance-tool">${icon("folder")}<span><strong>Folder</strong></span>${icon("chevron")}</button>
           ${running && state.data.settings.openConsole ? `<button id="open-console" class="instance-tool">${icon("terminal")}<span><strong>Console</strong></span>${icon("chevron")}</button>` : ""}
           <button id="open-logs" class="instance-tool">${icon("logs")}<span><strong>Logs</strong></span>${icon("chevron")}</button>
@@ -614,18 +653,19 @@ function renderContextMenu() {
     const instance = state.data.instances.find((item) => item.id === state.contextMenu.instanceId);
     if (!instance) return "";
     const running = isRunning(instance.id);
+    const installing = installationFor(instance.id)?.phase === "installing";
     return `
       <div class="context-menu" role="menu" aria-label="Actions for ${escapeHtml(instance.name)}" style="${position}">
         <div class="context-title"><span class="instance-symbol">${icon("instance")}</span><span><strong>${escapeHtml(instance.name)}</strong><small>${instance.loader !== "vanilla" ? `${escapeHtml(loaderLabel(instance.loader))} · ` : ""}Minecraft ${escapeHtml(instance.version)}</small></span></div>
         <div class="context-separator"></div>
-        <button class="context-action" role="menuitem" data-context-action="play" ${running ? "disabled" : ""}>${icon(running ? "check" : "play")}<span>${running ? "Already running" : "Play"}</span></button>
-        <button class="context-action" role="menuitem" data-context-action="edit">${icon("edit")}<span>Edit</span></button>
-        ${instance.loader !== "vanilla" ? `<button class="context-action" role="menuitem" data-context-action="mods">${icon("mods")}<span>Manage mods</span></button>` : ""}
+        <button class="context-action" role="menuitem" data-context-action="play" ${running || installing ? "disabled" : ""}>${icon(running ? "check" : "play")}<span>${running ? "Already running" : installing ? "Installing" : "Play"}</span></button>
+        <button class="context-action" role="menuitem" data-context-action="edit" ${installing ? "disabled" : ""}>${icon("edit")}<span>Edit</span></button>
+        ${instance.loader !== "vanilla" ? `<button class="context-action" role="menuitem" data-context-action="mods" ${installing ? "disabled" : ""}>${icon("mods")}<span>Manage mods</span></button>` : ""}
         <button class="context-action" role="menuitem" data-context-action="folder">${icon("folder")}<span>Open folder</span></button>
         <button class="context-action" role="menuitem" data-context-action="logs">${icon("logs")}<span>View logs</span></button>
         ${running && state.data.settings.openConsole ? `<button class="context-action" role="menuitem" data-context-action="console">${icon("terminal")}<span>Open console</span></button>` : ""}
         <div class="context-separator"></div>
-        <button class="context-action danger-action" role="menuitem" data-context-action="delete" ${running ? "disabled" : ""} title="${running ? "A running instance cannot be deleted" : "Delete instance permanently"}">${icon("trash")}<span>${running ? "Currently running" : "Delete instance"}</span></button>
+        <button class="context-action danger-action" role="menuitem" data-context-action="delete" ${running || installing ? "disabled" : ""} title="${running ? "A running instance cannot be deleted" : installing ? "Wait for installation to finish" : "Delete instance permanently"}">${icon("trash")}<span>${running ? "Currently running" : installing ? "Installing" : "Delete instance"}</span></button>
       </div>`;
   }
 
@@ -794,6 +834,7 @@ function bindEvents() {
   document.querySelector("#open-console")?.addEventListener("click", () => invoke("open_instance_console", { instanceId: activeInstance().id }).catch((error) => fail("Could not open console", error)));
   document.querySelector("#open-logs")?.addEventListener("click", () => invoke("open_instance_logs", { instanceId: activeInstance().id }).catch((error) => fail("Could not open logs", error)));
   document.querySelector("#manage-mods")?.addEventListener("click", openMods);
+  document.querySelector("#retry-installation")?.addEventListener("click", retryInstallation);
   document.querySelector("#open-data")?.addEventListener("click", () => callSimple("open_data_folder", {}, "Data folder opened."));
   document.querySelector("#signin")?.addEventListener("click", login);
   bindAccountMenuEvents();
@@ -1103,11 +1144,7 @@ async function saveInstance(event) {
   if (!name) return;
   state.busy = editing ? "save" : "create";
   if (!editing) {
-    state.progress = 0;
-    state.transferRate = "";
-    state.status = `Installing Minecraft ${version}...`;
-    event.currentTarget.querySelectorAll("button").forEach((button) => { button.disabled = true; });
-    updateStatusDom();
+    state.status = `Creating ${name}...`;
   }
   try {
     let instance;
@@ -1146,11 +1183,20 @@ async function saveInstance(event) {
       instance = await invoke("create_instance", { name, version, loader });
       state.data.instances.push(instance);
       state.activeId = instance.id;
+      if (!state.installations.has(instance.id)) {
+        state.installations.set(instance.id, {
+          instanceId: instance.id,
+          instanceName: instance.name,
+          phase: "installing",
+          progress: 0,
+          message: `Preparing Minecraft ${instance.version}...`,
+        });
+      }
       notify("Instance created.", "success");
     }
     state.selectedVersion = instance.version;
     state.modal = null;
-    state.status = "Ready to play.";
+    state.status = editing ? "Ready to play." : `${instance.name} is installing in the background.`;
     state.progress = 0;
     state.transferRate = "";
   } catch (error) {
@@ -1159,6 +1205,33 @@ async function saveInstance(event) {
     fail(editing ? "Could not save instance" : "Could not create instance", error);
   } finally {
     state.busy = null;
+    render();
+  }
+}
+
+async function retryInstallation() {
+  const instance = activeInstance();
+  if (!instance || installationFor(instance.id)?.phase === "installing") return;
+  state.installations.set(instance.id, {
+    instanceId: instance.id,
+    instanceName: instance.name,
+    phase: "installing",
+    progress: 0,
+    message: `Preparing Minecraft ${instance.version}...`,
+  });
+  state.status = `Retrying ${instance.name} installation...`;
+  render();
+  try {
+    await invoke("prepare_instance", { instanceId: instance.id });
+  } catch (error) {
+    state.installations.set(instance.id, {
+      instanceId: instance.id,
+      instanceName: instance.name,
+      phase: "failed",
+      progress: 0,
+      message: cleanError(error),
+    });
+    fail("Could not start installation", error);
     render();
   }
 }
@@ -1193,6 +1266,7 @@ async function deleteInstance() {
   state.busy = "delete";
   try {
     await invoke("delete_instance", { instanceId: instance.id });
+    state.installations.delete(instance.id);
     state.data.instances = state.data.instances.filter((item) => item.id !== instance.id);
     const next = state.data.instances[0] || null;
     state.activeId = next?.id || null;
@@ -1237,6 +1311,7 @@ async function launch() {
   if (isRunning(instance.id)) return;
   const version = state.selectedVersion || instance.version;
   const launchBehavior = state.data.settings.launchBehavior;
+  state.installations.delete(instance.id);
   state.busy = `launch:${instance.id}`;
   state.data.runningInstances.push(instance.id);
   state.progress = 0;
@@ -1308,16 +1383,34 @@ function updateStatusDom() {
   const progress = document.querySelector("#progress-fill");
   const metrics = document.querySelector("#activity-metrics");
   const playProgress = document.querySelector("#play-progress-label");
-  const instanceSubmit = document.querySelector("#instance-submit");
   if (text) text.textContent = state.status;
   if (progress) progress.style.width = `${Math.round(state.progress * 100)}%`;
   const summary = `${Math.round(state.progress * 100)}%${state.transferRate ? ` · ${state.transferRate}` : ""}`;
-  if (metrics) metrics.textContent = state.busy?.startsWith("launch:") || state.busy === "create" ? summary : "";
+  if (metrics) metrics.textContent = state.busy?.startsWith("launch:") ? summary : "";
   if (playProgress) playProgress.textContent = summary;
-  if (instanceSubmit && state.busy === "create") {
-    instanceSubmit.disabled = true;
-    instanceSubmit.innerHTML = `<span class="spinner"></span>Installing ${Math.round(state.progress * 100)}%`;
+}
+
+function updateInstallationDom(status) {
+  const sidebarState = document.querySelector(`[data-instance-state="${CSS.escape(status.instanceId)}"]`);
+  const stats = installationStats(status);
+  if (sidebarState) {
+    const instance = state.data.instances.find((item) => item.id === status.instanceId);
+    sidebarState.textContent = status.phase === "completed" ? (instance?.version || "Ready") : status.phase === "failed" ? "Installation failed" : `Installing ${stats.percent}%`;
+    if (status.phase !== "installing") sidebarState.closest(".instance-nav-item")?.querySelector(".nav-installing")?.remove();
   }
+  if (activeInstance()?.id !== status.instanceId || state.page !== "library") return;
+  const card = document.querySelector(`[data-installation-status="${CSS.escape(status.instanceId)}"]`);
+  if (!card || status.phase !== "installing") {
+    render();
+    return;
+  }
+  card.querySelector("#installation-message").textContent = stats.message;
+  card.querySelector("#installation-percent").textContent = `${stats.percent}%`;
+  card.querySelector("#installation-speed").textContent = stats.speed;
+  card.querySelector("#installation-files").textContent = stats.files;
+  card.querySelector("#installation-progress-fill").style.width = `${stats.percent}%`;
+  const play = document.querySelector("#primary-action small");
+  if (play) play.textContent = `${stats.percent}% complete`;
 }
 
 function cleanConsoleMessage(value) {
@@ -1550,6 +1643,24 @@ async function init() {
       updateStatusDom();
     });
     await listen("mod-install-progress", (event) => modsFeature.updateProgress(event.payload));
+    await listen("instance-installation-progress", (event) => {
+      const status = event.payload;
+      if (!status?.instanceId) return;
+      if (status.phase === "completed") {
+        state.installations.delete(status.instanceId);
+        state.status = status.message;
+        notify(`${status.instanceName} is ready to play.`, "success");
+        if (activeInstance()?.id === status.instanceId && state.page === "library") render();
+        else updateInstallationDom(status);
+        return;
+      }
+      state.installations.set(status.instanceId, status);
+      if (status.phase === "failed") {
+        state.status = status.message;
+        notify(`${status.instanceName} installation failed.`, "error");
+      }
+      updateInstallationDom(status);
+    });
     await listen("instance-status", (event) => {
       const { instanceId, running } = event.payload || {};
       if (!instanceId || !state.data) return;
@@ -1566,6 +1677,7 @@ async function init() {
       else updateStatusDom();
     });
     state.data = await invoke("load_launcher");
+    state.installations = new Map((state.data.installations || []).map((status) => [status.instanceId, status]));
     applyAccent(state.data.accentColor);
     const initialInstance = state.data.instances[0] || null;
     state.activeId = initialInstance?.id || null;

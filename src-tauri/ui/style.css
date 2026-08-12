@@ -53,17 +53,7 @@ button, input[type="range"], input[type="checkbox"] { cursor: pointer; }
   border-right: 1px solid var(--line);
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  height: 36px;
-  padding: 0 10px;
-  font-size: 16px;
-  font-weight: 650;
-  letter-spacing: -.02em;
-}
-
-.primary-nav { display: grid; gap: 2px; margin-top: 20px; }
+.primary-nav { display: grid; gap: 2px; }
 
 .nav-item, .instance-nav-item {
   width: 100%;
@@ -155,6 +145,7 @@ button, input[type="range"], input[type="checkbox"] { cursor: pointer; }
 .instance-nav-copy strong { font-size: 11px; font-weight: 580; }
 .instance-nav-copy small { margin-top: 2px; color: var(--muted-2); font-size: 9px; }
 .nav-running { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.nav-installing { flex: 0 0 auto; width: 7px; height: 7px; border: 1px solid var(--accent); border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 
 .instance-symbol {
   display: inline-grid;
@@ -304,6 +295,21 @@ button, input[type="range"], input[type="checkbox"] { cursor: pointer; }
 .instance-heading { min-width: 0; }
 .instance-heading h2 { margin: 0 0 8px; font-size: clamp(28px, 4vw, 38px); line-height: 1; font-weight: 620; letter-spacing: -.045em; }
 .instance-heading p { margin: 0; color: var(--muted); font-size: 10px; }
+.instance-installation { position: relative; margin-top: 21px; padding: 14px; overflow: hidden; border: 1px solid rgba(var(--accent-rgb), .38); border-radius: 7px; background: rgba(var(--accent-rgb), .055); }
+.instance-installation.failed { border-color: #553033; background: #0c0607; }
+.installation-heading { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.installation-heading > span:nth-child(2) { min-width: 0; flex: 1; }
+.installation-heading strong, .installation-heading small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.installation-heading strong { font-size: 11px; font-weight: 620; }
+.installation-heading small { margin-top: 3px; color: var(--muted); font-size: 8px; }
+.installation-icon { display: grid; place-items: center; width: 28px; height: 28px; flex: 0 0 auto; color: var(--accent); }
+.installation-icon .spinner { width: 16px; height: 16px; margin: 0; }
+.instance-installation.failed .installation-icon { color: var(--danger); }
+.installation-metrics { display: flex; align-items: center; gap: 12px; min-height: 17px; margin: 12px 0 7px 39px; color: var(--muted-2); font-size: 8px; font-variant-numeric: tabular-nums; }
+.installation-metrics strong { color: var(--text); font-size: 10px; }
+.installation-metrics span:empty { display: none; }
+.installation-progress { height: 3px; margin-left: 39px; overflow: hidden; border-radius: 2px; background: #151515; }
+.installation-progress span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .14s linear; }
 .instance-actions { display: flex; gap: 5px; margin-left: auto; }
 .icon-button { width: 34px; height: 34px; background: #070707; border-color: var(--line); }
 .icon-button .icon { width: 15px; height: 15px; }
@@ -454,6 +460,7 @@ button, input[type="range"], input[type="checkbox"] { cursor: pointer; }
   background: #030303;
 }
 .instance-tool:hover { border-color: var(--line-strong); color: var(--text); background: #080808; }
+.instance-tool:disabled { cursor: default; opacity: .45; }
 .instance-tool > .icon:first-child { width: 18px; height: 18px; color: var(--accent); }
 .instance-tool > .icon:last-child { width: 11px; height: 11px; color: var(--muted-2); }
 .instance-tool > span { min-width: 0; flex: 1; }
