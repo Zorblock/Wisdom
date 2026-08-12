@@ -53,6 +53,27 @@ pub struct InstalledModView {
     pub latest_version_number: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationPreview {
+    pub from_version: String,
+    pub to_version: String,
+    pub loader: String,
+    pub managed_mod_count: usize,
+    pub changes: Vec<MigrationModChange>,
+    pub dependency_count: usize,
+    pub unavailable: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationModChange {
+    pub project_id: String,
+    pub title: String,
+    pub from_version: String,
+    pub to_version: String,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ContentManifest {
@@ -164,6 +185,79 @@ fn default_true() -> bool {
 
 pub fn has_installed_mods(root: &Path, instance: &Instance) -> Result<bool> {
     Ok(!load_manifest(root, instance)?.mods.is_empty())
+}
+
+pub fn managed_mod_count(root: &Path, instance: &Instance) -> Result<usize> {
+    Ok(load_manifest(root, instance)?.mods.len())
+}
+
+pub fn preview_migration(
+    root: &Path,
+    instance_id: &str,
+    target_version: &str,
+    target_loader: crate::modloaders::ModLoader,
+) -> Result<MigrationPreview> {
+    let instance = instances::load(root, instance_id)?;
+    let loader = target_loader
+        .modrinth_name()
+        .context("Managed mods cannot be migrated to Vanilla")?;
+    let manifest = load_manifest(root, &instance)?;
+    let roots = manifest
+        .mods
+        .iter()
+        .filter(|item| item.explicit)
+        .collect::<Vec<_>>();
+    let root_ids = roots
+        .iter()
+        .map(|item| item.project_id.as_str())
+        .collect::<HashSet<_>>();
+    let client = http()?;
+    let mut resolved = HashMap::<String, ApiVersion>::new();
+    let mut changes = Vec::new();
+    let mut unavailable = unmanaged_mod_files(root, &instance, &manifest)?
+        .into_iter()
+        .map(|name| format!("{name}: unmanaged mod files cannot be migrated automatically"))
+        .collect::<Vec<_>>();
+
+    for installed in roots {
+        let mut candidate = resolved.clone();
+        let mut resolving = HashSet::new();
+        match resolve_migration_project(
+            &client,
+            &installed.project_id,
+            None,
+            loader,
+            target_version,
+            &mut candidate,
+            &mut resolving,
+        ) {
+            Ok(()) => {
+                if let Some(version) = candidate.get(&installed.project_id) {
+                    changes.push(MigrationModChange {
+                        project_id: installed.project_id.clone(),
+                        title: installed.title.clone(),
+                        from_version: installed.version_number.clone(),
+                        to_version: version.version_number.clone(),
+                    });
+                }
+                resolved = candidate;
+            }
+            Err(error) => unavailable.push(format!("{}: {error:#}", installed.title)),
+        }
+    }
+    changes.sort_by(|left, right| left.title.to_lowercase().cmp(&right.title.to_lowercase()));
+    Ok(MigrationPreview {
+        from_version: instance.version,
+        to_version: target_version.to_owned(),
+        loader: target_loader.pretty_name().to_owned(),
+        managed_mod_count: manifest.mods.len(),
+        changes,
+        dependency_count: resolved
+            .keys()
+            .filter(|project_id| !root_ids.contains(project_id.as_str()))
+            .count(),
+        unavailable,
+    })
 }
 
 pub fn search(
@@ -572,6 +666,74 @@ fn fetch_project(client: &Client, project_id: &str) -> Result<ApiProject> {
         .json()?)
 }
 
+fn resolve_migration_project(
+    client: &Client,
+    project_id: &str,
+    exact_version: Option<&str>,
+    loader: &str,
+    game_version: &str,
+    resolved: &mut HashMap<String, ApiVersion>,
+    resolving: &mut HashSet<String>,
+) -> Result<()> {
+    validate_project_id(project_id)?;
+    if let Some(existing) = resolved.get(project_id) {
+        if exact_version.is_some_and(|required| required != existing.id) {
+            bail!("Conflicting required versions were found for dependency {project_id}");
+        }
+        return Ok(());
+    }
+    if !resolving.insert(project_id.to_owned()) {
+        return Ok(());
+    }
+    let version = match exact_version {
+        Some(version_id) => fetch_version(client, version_id)?,
+        None => fetch_latest_version(client, project_id, loader, game_version)?,
+    };
+    if version.project_id != project_id {
+        bail!("Modrinth returned a version for the wrong project");
+    }
+    ensure_compatible(&version, loader, game_version)?;
+    select_file(&version)?;
+    for dependency in version
+        .dependencies
+        .iter()
+        .filter(|dependency| dependency.dependency_type == "required")
+    {
+        let (dependency_project, dependency_version) = match (
+            dependency.project_id.as_deref(),
+            dependency.version_id.as_deref(),
+        ) {
+            (Some(project), version) => (project.to_owned(), version.map(str::to_owned)),
+            (None, Some(version_id)) => {
+                let dependency_version = fetch_version(client, version_id)?;
+                (dependency_version.project_id, Some(version_id.to_owned()))
+            }
+            (None, None) => {
+                bail!(
+                    "A required external dependency cannot be downloaded automatically{}",
+                    dependency
+                        .file_name
+                        .as_deref()
+                        .map(|name| format!(": {name}"))
+                        .unwrap_or_default()
+                )
+            }
+        };
+        resolve_migration_project(
+            client,
+            &dependency_project,
+            dependency_version.as_deref(),
+            loader,
+            game_version,
+            resolved,
+            resolving,
+        )?;
+    }
+    resolving.remove(project_id);
+    resolved.insert(project_id.to_owned(), version);
+    Ok(())
+}
+
 fn fetch_version(client: &Client, version_id: &str) -> Result<ApiVersion> {
     validate_project_id(version_id)?;
     Ok(client
@@ -796,6 +958,43 @@ fn manifest_path(root: &Path, instance: &Instance) -> PathBuf {
 
 fn mods_dir(root: &Path, instance: &Instance) -> PathBuf {
     instances::game_dir(root, instance).join("mods")
+}
+
+fn unmanaged_mod_files(
+    root: &Path,
+    instance: &Instance,
+    manifest: &ContentManifest,
+) -> Result<Vec<String>> {
+    let directory = mods_dir(root, instance);
+    if !directory.is_dir() {
+        return Ok(Vec::new());
+    }
+    let managed = manifest
+        .mods
+        .iter()
+        .filter_map(|item| {
+            managed_file_path(&directory, item)
+                .ok()?
+                .file_name()?
+                .to_str()
+                .map(str::to_owned)
+        })
+        .collect::<HashSet<_>>();
+    let mut unmanaged = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let lower = name.to_ascii_lowercase();
+        if (lower.ends_with(".jar") || lower.ends_with(".jar.disabled")) && !managed.contains(&name)
+        {
+            unmanaged.push(name);
+        }
+    }
+    unmanaged.sort_by_key(|name| name.to_lowercase());
+    Ok(unmanaged)
 }
 
 fn require_loader(instance: &Instance) -> Result<&'static str> {

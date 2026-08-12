@@ -49,7 +49,7 @@ impl ModLoader {
         }
     }
 
-    fn pretty_name(self) -> &'static str {
+    pub(crate) fn pretty_name(self) -> &'static str {
         match self {
             Self::Vanilla => "Vanilla",
             Self::Fabric => "Fabric",
@@ -63,6 +63,37 @@ impl ModLoader {
 pub struct ModdedLaunch {
     pub child: Child,
     pub loader_version: String,
+}
+
+pub fn check_version_support(loader: ModLoader, game_version: &str) -> Result<()> {
+    match loader {
+        ModLoader::Vanilla => bail!("Managed mods cannot be migrated to Vanilla"),
+        ModLoader::Fabric => {
+            let version = fabric::latest_stable_loader(&fabric::list_loader_versions()?)?
+                .version
+                .clone();
+            fabric::fetch_profile(game_version, &version)
+                .with_context(|| format!("Fabric does not support Minecraft {game_version}"))?;
+        }
+        ModLoader::Quilt => {
+            let version = quilt::latest_loader(&quilt::list_loader_versions()?)?
+                .version
+                .clone();
+            quilt::fetch_profile(game_version, &version)
+                .with_context(|| format!("Quilt does not support Minecraft {game_version}"))?;
+        }
+        ModLoader::Forge => {
+            let versions = forge::list_forge_versions()?;
+            forge::latest_for_minecraft(&versions, game_version)
+                .with_context(|| format!("Forge does not support Minecraft {game_version}"))?;
+        }
+        ModLoader::Neoforge => {
+            let versions = neoforge::list_neoforge_versions()?;
+            neoforge::latest_for_minecraft(&versions, game_version)
+                .with_context(|| format!("NeoForge does not support Minecraft {game_version}"))?;
+        }
+    }
+    Ok(())
 }
 
 pub fn install_and_launch(

@@ -640,6 +640,38 @@ input[type="range"] { width: 200px; height: 3px; accent-color: var(--accent); }
 .advanced-fields { padding-top: 14px; }
 .danger-mark { display: inline-grid; place-items: center; width: 38px; height: 38px; color: var(--danger); }
 .danger-mark .icon { width: 19px; height: 19px; }
+.version-change-note { display: flex; align-items: flex-start; gap: 8px; margin: 2px 0 16px; padding: 10px; border: 1px solid #4b3b25; border-radius: 6px; color: #caa66c; background: #0d0904; font-size: 8px; line-height: 1.5; }
+.version-change-note .icon { width: 14px; height: 14px; flex: 0 0 auto; }
+.migration-modal { width: min(590px, 100%); }
+.modal-kicker { display: block; margin-bottom: 4px; color: var(--accent); font-size: 8px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+.migration-target { display: grid; grid-template-columns: 1fr 18px 1fr; align-items: center; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 7px; background: #020202; }
+.migration-target > .icon { width: 12px; color: var(--muted-2); }
+.migration-target small, .migration-target strong { display: block; }
+.migration-target small { color: var(--muted-2); font-size: 7px; text-transform: uppercase; letter-spacing: .07em; }
+.migration-target strong { margin-top: 4px; font-size: 10px; font-weight: 600; }
+.migration-explanation { margin: 14px 1px; color: var(--muted); font-size: 9px; line-height: 1.55; }
+.migration-summary { display: grid; grid-template-columns: repeat(3, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: #020202; }
+.migration-summary > span { padding: 11px; border-right: 1px solid var(--line); }
+.migration-summary > span:last-child { border-right: 0; }
+.migration-summary strong, .migration-summary small { display: block; }
+.migration-summary strong { font-size: 14px; font-weight: 620; }
+.migration-summary small { margin-top: 3px; color: var(--muted-2); font-size: 7px; }
+.migration-list, .migration-problems { max-height: 220px; margin-top: 10px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: #020202; scrollbar-width: thin; scrollbar-color: #292929 transparent; }
+.migration-list > div { display: flex; align-items: center; gap: 9px; min-height: 45px; padding: 8px 11px; border-bottom: 1px solid var(--line); }
+.migration-list > div:last-child, .migration-problems > div:last-child { border-bottom: 0; }
+.migration-list > div > span:first-child { min-width: 0; flex: 1; }
+.migration-list strong, .migration-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.migration-list strong { font-size: 9px; font-weight: 590; }
+.migration-list small { margin-top: 3px; color: var(--muted-2); font-size: 7px; }
+.migration-list > div > .icon { width: 10px; color: var(--muted-2); }
+.migration-list > div > span:last-child { color: var(--accent); font-size: 8px; }
+.migration-blocked { display: flex; align-items: flex-start; gap: 9px; margin-top: 14px; padding: 11px; border: 1px solid #5c3232; border-radius: 7px; color: #e39090; background: #0c0505; }
+.migration-blocked > .icon { flex: 0 0 auto; }
+.migration-blocked strong, .migration-blocked small { display: block; }
+.migration-blocked strong { font-size: 9px; }
+.migration-blocked small { margin-top: 3px; color: #a96d6d; font-size: 8px; }
+.migration-problems > div { padding: 9px 11px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 8px; line-height: 1.45; }
+.migration-actions { justify-content: flex-end; padding-top: 15px; border-top: 1px solid var(--line); }
 
 .toast {
   position: fixed;

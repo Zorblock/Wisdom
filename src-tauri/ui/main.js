@@ -21,6 +21,7 @@ const state = {
   selectedVersion: null,
   page: "library",
   modal: null,
+  pendingMigration: null,
   contextMenu: null,
   contextTarget: null,
   contextSelection: "",
@@ -631,9 +632,29 @@ function renderSettings() {
 function renderModal() {
   if (!state.modal) return "";
   const instance = activeInstance();
-  if ((state.modal === "edit" || state.modal === "delete") && !instance) return "";
+  if ((state.modal === "edit" || state.modal === "delete" || state.modal === "migration") && !instance) return "";
   if (state.modal === "delete") {
     return `<div class="modal-backdrop"><section class="modal compact" role="dialog" aria-modal="true"><div class="danger-mark">${icon("trash")}</div><h2>Delete instance?</h2><p>“${escapeHtml(instance.name)}” and all worlds stored inside it will be permanently removed.</p><div class="modal-actions"><button data-close-modal class="button secondary">Cancel</button><button id="confirm-delete" class="button danger">Delete permanently</button></div></section></div>`;
+  }
+  if (state.modal === "migration" && state.pendingMigration) {
+    const { preview } = state.pendingMigration;
+    const blocked = preview.unavailable.length > 0;
+    return `
+      <div class="modal-backdrop">
+        <section class="modal migration-modal" role="dialog" aria-modal="true" aria-labelledby="migration-title">
+          <div class="modal-header"><div><span class="modal-kicker">Version migration</span><h2 id="migration-title">Review changes</h2></div><button data-close-modal class="icon-button">${icon("close")}</button></div>
+          <div class="migration-target"><span><small>From</small><strong>Minecraft ${escapeHtml(preview.fromVersion)}</strong></span>${icon("chevron")}<span><small>To</small><strong>Minecraft ${escapeHtml(preview.toVersion)} &middot; ${escapeHtml(preview.loader)}</strong></span></div>
+          ${blocked ? `
+            <div class="migration-blocked">${icon("warning")}<span><strong>Migration blocked</strong><small>These files cannot be migrated automatically to the selected target.</small></span></div>
+            <div class="migration-problems">${preview.unavailable.map((problem) => `<div>${escapeHtml(problem)}</div>`).join("")}</div>
+          ` : `
+            <p class="migration-explanation">Wisdom will create a backup, migrate every direct mod and its required dependencies, then roll everything back automatically if any download fails.</p>
+            <div class="migration-summary"><span><strong>${preview.changes.length}</strong><small>Direct mods</small></span><span><strong>${preview.dependencyCount}</strong><small>Dependencies</small></span><span><strong>${preview.managedModCount}</strong><small>Managed files</small></span></div>
+            <div class="migration-list">${preview.changes.map((change) => `<div><span><strong>${escapeHtml(change.title)}</strong><small>${escapeHtml(change.fromVersion)}</small></span>${icon("chevron")}<span>${escapeHtml(change.toVersion)}</span></div>`).join("")}</div>
+          `}
+          <div class="modal-actions migration-actions"><button data-close-modal class="button secondary">${blocked ? "Close" : "Cancel"}</button>${blocked ? `<button id="migration-manage-mods" class="button primary">${icon("mods")}Manage mods</button>` : `<button id="confirm-migration" class="button primary" ${state.busy ? "disabled" : ""}>${state.busy === "migration" ? `<span class="spinner"></span>Migrating` : `${icon("refresh")}Migrate instance`}</button>`}</div>
+        </section>
+      </div>`;
   }
   const editing = state.modal === "edit";
   const selected = editing ? instance.version : state.data.latestVersion;
@@ -645,6 +666,7 @@ function renderModal() {
           <label class="field"><span>Name</span><input id="instance-name" maxlength="48" value="${editing ? escapeHtml(instance.name) : "New instance"}" required autofocus /></label>
           <div class="field"><span>Minecraft version</span>${customSelect("instance-version", selected, versionOptions(selected), "Minecraft version")}</div>
           <div class="field"><span>Mod loader</span>${customSelect("instance-loader", editing ? instance.loader : "vanilla", loaderOptions(), "Mod loader")}</div>
+          ${editing && instance.loader !== "vanilla" ? `<div class="version-change-note">${icon("warning")}<span>Changing the Minecraft version or mod loader requires a reviewed migration of all managed mods.</span></div>` : ""}
           ${editing ? `
             <label class="setting-row inline-setting"><span><strong>Custom memory</strong></span><input id="override-ram" class="switch" type="checkbox" ${instance.ramMb ? "checked" : ""} /></label>
             <label id="instance-ram-wrap" class="field ${instance.ramMb ? "" : "disabled"}"><span>Memory <output id="instance-ram-output">${((instance.ramMb || state.data.settings.ramMb) / 1024).toFixed(1)} GB</output></span><input id="instance-ram" type="range" min="1024" max="16384" step="512" value="${instance.ramMb || state.data.settings.ramMb}" ${instance.ramMb ? "" : "disabled"} /></label>
@@ -662,13 +684,21 @@ function render() {
     return;
   }
   if (state.page === "mods" && activeInstance()?.loader === "vanilla") state.page = "library";
+  const currentScroll = app.dataset.page === state.page
+    ? document.querySelector(".content-scroll")?.scrollTop
+    : null;
   const content = state.page === "settings"
     ? renderSettings()
     : state.page === "mods" && activeInstance()
       ? modsFeature.render(activeInstance())
       : renderLibrary();
   app.innerHTML = shell(content);
+  app.dataset.page = state.page;
   bindEvents();
+  if (currentScroll != null) {
+    const scrollContainer = document.querySelector(".content-scroll");
+    if (scrollContainer) scrollContainer.scrollTop = currentScroll;
+  }
 }
 
 function bindEvents() {
@@ -697,6 +727,12 @@ function bindEvents() {
   document.querySelector("#instance-form")?.addEventListener("submit", saveInstance);
   document.querySelector("#delete-instance")?.addEventListener("click", () => openModal("delete"));
   document.querySelector("#confirm-delete")?.addEventListener("click", deleteInstance);
+  document.querySelector("#confirm-migration")?.addEventListener("click", confirmMigration);
+  document.querySelector("#migration-manage-mods")?.addEventListener("click", () => {
+    state.pendingMigration = null;
+    state.modal = null;
+    openMods();
+  });
   document.querySelector("#open-instance")?.addEventListener("click", () => callSimple("open_instance_folder", { instanceId: activeInstance().id }, "Instance folder opened."));
   document.querySelector("#open-console")?.addEventListener("click", () => invoke("open_instance_console", { instanceId: activeInstance().id }).catch((error) => fail("Could not open console", error)));
   document.querySelector("#manage-mods")?.addEventListener("click", openMods);
@@ -736,6 +772,7 @@ function openModal(modal) {
   if (state.busy) return;
   dismissContextMenu(false);
   state.accountMenu = false;
+  if (modal !== "migration") state.pendingMigration = null;
   state.modal = modal;
   render();
 }
@@ -1018,7 +1055,7 @@ async function saveInstance(event) {
     let instance;
     if (editing) {
       const overrideRam = document.querySelector("#override-ram").checked;
-      instance = await invoke("update_instance", {
+      const configuration = {
         instanceId: activeInstance().id,
         name,
         version,
@@ -1026,7 +1063,24 @@ async function saveInstance(event) {
         ramMb: overrideRam ? Number(document.querySelector("#instance-ram").value) : null,
         jvmArgs: document.querySelector("#instance-jvm").value || null,
         gameArgs: document.querySelector("#instance-game").value || null,
-      });
+      };
+      const current = activeInstance();
+      if (current.version !== version || current.loader !== loader) {
+        state.status = "Checking mod compatibility...";
+        updateStatusDom();
+        const preview = await invoke("preview_instance_migration", {
+          instanceId: current.id,
+          version,
+          loader,
+        });
+        if (preview.managedModCount > 0) {
+          state.pendingMigration = { configuration, preview };
+          state.modal = "migration";
+          state.status = preview.unavailable.length ? "Migration needs attention." : "Review migration before applying changes.";
+          return;
+        }
+      }
+      instance = await invoke("update_instance", configuration);
       const index = state.data.instances.findIndex((item) => item.id === instance.id);
       state.data.instances[index] = instance;
       notify("Instance saved.", "success");
@@ -1041,6 +1095,28 @@ async function saveInstance(event) {
     state.status = "Ready to play.";
   } catch (error) {
     fail(editing ? "Could not save instance" : "Could not create instance", error);
+  } finally {
+    state.busy = null;
+    render();
+  }
+}
+
+async function confirmMigration() {
+  const pending = state.pendingMigration;
+  if (!pending || pending.preview.unavailable.length || state.busy) return;
+  state.busy = "migration";
+  render();
+  try {
+    const instance = await invoke("migrate_instance", pending.configuration);
+    const index = state.data.instances.findIndex((item) => item.id === instance.id);
+    state.data.instances[index] = instance;
+    state.selectedVersion = instance.version;
+    state.pendingMigration = null;
+    state.modal = null;
+    state.status = "Instance migration completed.";
+    notify("Instance and mods migrated.", "success");
+  } catch (error) {
+    fail("Could not migrate instance", error);
   } finally {
     state.busy = null;
     render();
