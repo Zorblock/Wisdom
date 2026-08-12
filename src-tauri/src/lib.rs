@@ -11,7 +11,9 @@ mod instances;
 mod minecraft;
 mod minecraft_install;
 mod modloaders;
+mod modpack;
 mod modrinth;
+mod modrinth_content;
 mod runtime;
 mod storage;
 
@@ -265,10 +267,26 @@ async fn prepare_instance(
         Ok((root, instance))
     })
     .await?;
-    state
-        .installations
-        .start(app, root, instance)
-        .map_err(|error| error.to_string())
+    if let Some(plan) =
+        modpack::load_pending(&root, &instance).map_err(|error| error.to_string())?
+    {
+        let job_root = root.clone();
+        let job_instance = instance.clone();
+        state
+            .installations
+            .start_job(
+                app,
+                instance,
+                format!("Retrying {}...", job_instance.name),
+                move |progress| modpack::install(&job_root, &job_instance, plan, progress.as_ref()),
+            )
+            .map_err(|error| error.to_string())
+    } else {
+        state
+            .installations
+            .start(app, root, instance)
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[tauri::command]
@@ -915,6 +933,12 @@ pub fn run() {
             read_instance_log,
             content_commands::list_instance_mods,
             content_commands::search_modrinth,
+            content_commands::list_instance_content,
+            content_commands::search_modrinth_content,
+            content_commands::install_modrinth_content,
+            content_commands::remove_modrinth_content,
+            content_commands::set_modrinth_content_enabled,
+            content_commands::install_modrinth_modpack,
             content_commands::install_modrinth_mod,
             content_commands::remove_modrinth_mod,
             content_commands::set_modrinth_mod_enabled,

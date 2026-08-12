@@ -13,10 +13,23 @@
 .mods-action-feedback small { margin-top: 3px; color: var(--muted); font-size: 8px; }
 .mods-section { margin-top: 20px; }
 .compatibility-note { margin: 0 0 2px auto; color: var(--muted-2); font-size: 8px; }
+.content-navigation { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 14px; }
+.content-type-tabs, .content-view-tabs { display: flex; align-items: center; gap: 3px; }
+.content-type-tab, .content-view-tab { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 10px; border: 1px solid transparent; border-radius: 5px; color: var(--muted); background: transparent; font-size: 9px; font-weight: 580; }
+.content-type-tab:hover, .content-view-tab:hover { color: var(--text); background: #0b0b0b; }
+.content-type-tab:disabled { cursor: default; opacity: .35; background: transparent; }
+.content-type-tab.active, .content-view-tab.active { color: var(--text); border-color: var(--line); background: rgba(var(--accent-rgb), .12); }
+.content-type-tab.active .icon { color: var(--accent); }
+.content-type-tab .icon { width: 13px; height: 13px; }
+.content-view-tabs { padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: #020202; }
+.content-view-tab { height: 27px; min-width: 72px; }
+.content-view-tab.active { border-color: transparent; background: #111; }
+.content-panel { margin-top: 16px; }
 
 .mods-toolbar { display: grid; gap: 8px; margin-bottom: 8px; }
 .installed-toolbar { grid-template-columns: minmax(220px, 1fr) 160px 36px; }
 .discover-toolbar { grid-template-columns: minmax(250px, 1fr) 170px 160px; }
+.discover-toolbar.without-category { grid-template-columns: minmax(250px, 1fr) 170px; }
 .compact-select { min-width: 0; }
 .compact-select .select-trigger { height: 34px; }
 .mods-search { display: flex; align-items: center; height: 34px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--muted-2); background: #000; }
@@ -77,6 +90,9 @@
 .mods-pagination .button { min-width: 76px; }
 
 @media (max-width: 900px) {
+  .content-navigation { align-items: stretch; flex-direction: column; }
+  .content-type-tabs { overflow-x: auto; }
+  .content-view-tabs { align-self: flex-start; }
   .discover-toolbar { grid-template-columns: 1fr 1fr; }
   .discover-toolbar .mods-search { grid-column: 1 / -1; }
   .installed-toolbar { grid-template-columns: 1fr 150px 36px; }

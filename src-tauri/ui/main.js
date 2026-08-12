@@ -112,6 +112,8 @@ const icons = {
   power: "fa-solid fa-power-off",
   sortAsc: "fa-solid fa-arrow-down-a-z",
   sortDesc: "fa-solid fa-arrow-up-z-a",
+  image: "fa-solid fa-image",
+  shader: "fa-solid fa-wand-magic-sparkles",
 };
 
 function icon(name) {
@@ -153,6 +155,14 @@ const modsFeature = createModsFeature({
   setStatus: (message) => {
     state.status = message;
     updateStatusDom();
+  },
+  onInstanceCreated: (instance) => {
+    if (!state.data.instances.some((item) => item.id === instance.id)) state.data.instances.push(instance);
+    state.activeId = instance.id;
+    state.selectedVersion = instance.version;
+    state.page = "library";
+    state.status = `${instance.name} is installing in the background.`;
+    render();
   },
   goBack: () => {
     state.page = "library";
@@ -636,7 +646,7 @@ function renderLibrary() {
       <section class="instance-tools-section">
         <div class="section-heading"><h3>Instance</h3></div>
         <div class="instance-tools">
-          ${instance.loader !== "vanilla" ? `<button id="manage-mods" class="instance-tool" ${installing ? "disabled" : ""}>${icon("mods")}<span><strong>Mods</strong></span>${icon("chevron")}</button>` : ""}
+          <button id="manage-mods" class="instance-tool" ${installing ? "disabled" : ""}>${icon("mods")}<span><strong>Content</strong></span>${icon("chevron")}</button>
           <button id="edit-instance" type="button" class="instance-tool" data-open-modal="edit" ${installing ? "disabled" : ""}>${icon("settings")}<span><strong>Settings</strong></span>${icon("chevron")}</button>
           <button id="open-instance" class="instance-tool">${icon("folder")}<span><strong>Folder</strong></span>${icon("chevron")}</button>
           ${running && state.data.settings.openConsole ? `<button id="open-console" class="instance-tool">${icon("terminal")}<span><strong>Console</strong></span>${icon("chevron")}</button>` : ""}
@@ -660,7 +670,7 @@ function renderContextMenu() {
         <div class="context-separator"></div>
         <button class="context-action" role="menuitem" data-context-action="play" ${running || installing ? "disabled" : ""}>${icon(running ? "check" : "play")}<span>${running ? "Already running" : installing ? "Installing" : "Play"}</span></button>
         <button class="context-action" role="menuitem" data-context-action="edit" ${installing ? "disabled" : ""}>${icon("edit")}<span>Edit</span></button>
-        ${instance.loader !== "vanilla" ? `<button class="context-action" role="menuitem" data-context-action="mods" ${installing ? "disabled" : ""}>${icon("mods")}<span>Manage mods</span></button>` : ""}
+        <button class="context-action" role="menuitem" data-context-action="mods" ${installing ? "disabled" : ""}>${icon("mods")}<span>Manage content</span></button>
         <button class="context-action" role="menuitem" data-context-action="folder">${icon("folder")}<span>Open folder</span></button>
         <button class="context-action" role="menuitem" data-context-action="logs">${icon("logs")}<span>View logs</span></button>
         ${running && state.data.settings.openConsole ? `<button class="context-action" role="menuitem" data-context-action="console">${icon("terminal")}<span>Open console</span></button>` : ""}
@@ -774,7 +784,6 @@ function render() {
     app.innerHTML = `<div class="boot"><div><strong>Wisdom</strong><span>${escapeHtml(state.status)}</span></div><span class="boot-line"></span></div>`;
     return;
   }
-  if (state.page === "mods" && activeInstance()?.loader === "vanilla") state.page = "library";
   const currentScroll = app.dataset.renderedPage === state.page
     ? document.querySelector(".content-scroll")?.scrollTop
     : null;
@@ -1049,7 +1058,7 @@ async function handleContextAction(event) {
 
 function openMods() {
   const instance = activeInstance();
-  if (!instance || instance.loader === "vanilla") return;
+  if (!instance) return;
   state.page = "mods";
   state.modal = null;
   state.accountMenu = false;

@@ -48,12 +48,34 @@ impl InstallationManager {
     }
 
     pub fn start(&self, app: AppHandle, root: PathBuf, instance: Instance) -> Result<()> {
+        let operation_instance = instance.clone();
+        self.start_job(
+            app,
+            instance,
+            format!("Preparing Minecraft {}...", operation_instance.version),
+            move |progress| {
+                instance_setup::prepare(&root, &operation_instance, progress.as_ref())?;
+                Ok(())
+            },
+        )
+    }
+
+    pub fn start_job<F>(
+        &self,
+        app: AppHandle,
+        instance: Instance,
+        initial_message: String,
+        operation: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(Arc<dyn Fn(f32, String) + Send + Sync>) -> Result<()> + Send + 'static,
+    {
         let initial = InstallationStatus {
             instance_id: instance.id.clone(),
             instance_name: instance.name.clone(),
             phase: "installing".to_owned(),
             progress: 0.0,
-            message: format!("Preparing Minecraft {}...", instance.version),
+            message: initial_message,
         };
         {
             let mut statuses = self
@@ -75,18 +97,19 @@ impl InstallationManager {
             let progress_manager = manager.clone();
             let progress_app = app.clone();
             let progress_instance = instance.clone();
-            let progress = move |value: f32, message: String| {
-                let status = InstallationStatus {
-                    instance_id: progress_instance.id.clone(),
-                    instance_name: progress_instance.name.clone(),
-                    phase: "installing".to_owned(),
-                    progress: value.clamp(0.0, 1.0),
-                    message,
-                };
-                progress_manager.set_and_emit(&progress_app, status);
-            };
+            let progress: Arc<dyn Fn(f32, String) + Send + Sync> =
+                Arc::new(move |value: f32, message: String| {
+                    let status = InstallationStatus {
+                        instance_id: progress_instance.id.clone(),
+                        instance_name: progress_instance.name.clone(),
+                        phase: "installing".to_owned(),
+                        progress: value.clamp(0.0, 1.0),
+                        message,
+                    };
+                    progress_manager.set_and_emit(&progress_app, status);
+                });
 
-            match instance_setup::prepare(&root, &instance, &progress) {
+            match operation(progress) {
                 Ok(_) => {
                     let completed = InstallationStatus {
                         instance_id: instance.id.clone(),
