@@ -9,6 +9,7 @@ const app = document.querySelector("#app");
 const viewParams = new URLSearchParams(window.location.search);
 const isConsoleView = viewParams.get("console") === "1";
 const customSelectOptionSets = new Map();
+let cachedVersionOptions = null;
 const SELECT_ROW_HEIGHT = 34;
 const SELECT_OVERSCAN = 5;
 const ansiUp = new AnsiUp();
@@ -40,14 +41,17 @@ document.addEventListener("click", (event) => {
     event.preventDefault();
     openModal(modalTrigger.dataset.openModal);
   }
+  const pageTrigger = event.target.closest("button[data-page]");
+  if (pageTrigger) navigateTo(pageTrigger.dataset.page);
+  const instanceTrigger = event.target.closest("[data-instance]");
+  if (instanceTrigger) selectInstance(instanceTrigger.dataset.instance);
+  if (event.target.closest("#account-trigger")) toggleAccountMenu();
   if (!event.target.closest(".custom-select, .version-field")) closeCustomSelects();
   if (state.contextMenu && !event.target.closest(".context-menu")) {
     dismissContextMenu();
   }
   if (state.accountMenu && !event.target.closest(".sidebar-account")) {
-    state.accountMenu = false;
-    document.querySelector(".account-popover")?.remove();
-    document.querySelector("#account-trigger")?.setAttribute("aria-expanded", "false");
+    closeAccountMenu();
   }
 });
 
@@ -58,9 +62,7 @@ document.addEventListener("keydown", (event) => {
     closeCustomSelect(openSelect, true);
   } else if (event.key === "Escape" && (state.contextMenu || state.accountMenu)) {
     dismissContextMenu();
-    state.accountMenu = false;
-    document.querySelector(".account-popover")?.remove();
-    document.querySelector("#account-trigger")?.setAttribute("aria-expanded", "false");
+    closeAccountMenu();
   } else if ((event.key === "ArrowDown" || event.key === "ArrowUp") && state.contextMenu) {
     event.preventDefault();
     const actions = [...document.querySelectorAll(".context-action:not(:disabled)")];
@@ -73,6 +75,7 @@ document.addEventListener("keydown", (event) => {
 window.addEventListener("resize", () => {
   closeCustomSelects();
   dismissContextMenu(false);
+  closeAccountMenu();
 });
 
 const icons = {
@@ -191,16 +194,53 @@ function renderAccountMenu() {
     </div>`;
 }
 
+function bindAccountMenuEvents() {
+  document.querySelector("#add-account")?.addEventListener("click", login);
+  document.querySelectorAll("[data-select-account]").forEach((button) => button.addEventListener("click", selectAccount));
+  document.querySelectorAll("[data-remove-account]").forEach((button) => button.addEventListener("click", removeAccount));
+}
+
+function toggleAccountMenu() {
+  if (state.accountMenu) {
+    closeAccountMenu();
+    return;
+  }
+  dismissContextMenu(false);
+  closeCustomSelects();
+  state.accountMenu = true;
+  const host = document.querySelector(".sidebar-account");
+  host?.querySelector(".account-popover")?.remove();
+  host?.insertAdjacentHTML("beforeend", renderAccountMenu());
+  document.querySelector("#account-trigger")?.setAttribute("aria-expanded", "true");
+  bindAccountMenuEvents();
+}
+
+function closeAccountMenu() {
+  state.accountMenu = false;
+  document.querySelector(".account-popover")?.remove();
+  document.querySelector("#account-trigger")?.setAttribute("aria-expanded", "false");
+}
+
 function versionList(selected = "") {
   const showSnapshots = state.data.settings.showSnapshots;
   return state.data.versions.filter((version) => version.kind === "release" || showSnapshots || version.id === selected);
 }
 
 function versionOptions(selected) {
-  return versionList(selected).map((version) => ({
+  const source = state.data.versions;
+  const showSnapshots = state.data.settings.showSnapshots;
+  if (cachedVersionOptions
+    && cachedVersionOptions.source === source
+    && cachedVersionOptions.showSnapshots === showSnapshots
+    && cachedVersionOptions.selected === selected) {
+    return cachedVersionOptions.options;
+  }
+  const options = versionList(selected).map((version) => ({
     value: version.id,
     label: `${version.id}${version.kind === "snapshot" ? " · Snapshot" : ""}`,
   }));
+  cachedVersionOptions = { source, showSnapshots, selected, options };
+  return options;
 }
 
 function loaderOptions() {
@@ -553,10 +593,10 @@ function renderLibrary() {
       <section class="instance-tools-section">
         <div class="section-heading"><h3>Instance</h3></div>
         <div class="instance-tools">
-          ${instance.loader !== "vanilla" ? `<button id="manage-mods" class="instance-tool">${icon("mods")}<span><strong>Mods</strong><small>Manage content and updates</small></span>${icon("chevron")}</button>` : ""}
-          <button id="edit-instance" type="button" class="instance-tool" data-open-modal="edit">${icon("settings")}<span><strong>Settings</strong><small>Version, loader and memory</small></span>${icon("chevron")}</button>
-          <button id="open-instance" class="instance-tool">${icon("folder")}<span><strong>Folder</strong><small>Open instance files</small></span>${icon("chevron")}</button>
-          ${running && state.data.settings.openConsole ? `<button id="open-console" class="instance-tool">${icon("terminal")}<span><strong>Console</strong><small>View the running game</small></span>${icon("chevron")}</button>` : ""}
+          ${instance.loader !== "vanilla" ? `<button id="manage-mods" class="instance-tool">${icon("mods")}<span><strong>Mods</strong></span>${icon("chevron")}</button>` : ""}
+          <button id="edit-instance" type="button" class="instance-tool" data-open-modal="edit">${icon("settings")}<span><strong>Settings</strong></span>${icon("chevron")}</button>
+          <button id="open-instance" class="instance-tool">${icon("folder")}<span><strong>Folder</strong></span>${icon("chevron")}</button>
+          ${running && state.data.settings.openConsole ? `<button id="open-console" class="instance-tool">${icon("terminal")}<span><strong>Console</strong></span>${icon("chevron")}</button>` : ""}
         </div>
       </section>
     </div>`;
@@ -689,7 +729,7 @@ function render() {
     return;
   }
   if (state.page === "mods" && activeInstance()?.loader === "vanilla") state.page = "library";
-  const currentScroll = app.dataset.page === state.page
+  const currentScroll = app.dataset.renderedPage === state.page
     ? document.querySelector(".content-scroll")?.scrollTop
     : null;
   const content = state.page === "settings"
@@ -698,7 +738,9 @@ function render() {
       ? modsFeature.render(activeInstance())
       : renderLibrary();
   app.innerHTML = shell(content);
-  app.dataset.page = state.page;
+  // `data-page` belongs exclusively to navigation buttons. Reusing it on the
+  // app root makes every descendant click look like a navigation click.
+  app.dataset.renderedPage = state.page;
   bindEvents();
   if (currentScroll != null) {
     const scrollContainer = document.querySelector(".content-scroll");
@@ -706,23 +748,31 @@ function render() {
   }
 }
 
+function navigateTo(page) {
+  if (!state.data || !["library", "settings"].includes(page)) return;
+  if (state.page === page && !state.modal && !state.accountMenu) return;
+  state.page = page;
+  state.modal = null;
+  state.accountMenu = false;
+  render();
+}
+
+function selectInstance(instanceId) {
+  if (!state.data) return;
+  const instance = state.data.instances.find((item) => item.id === instanceId);
+  if (!instance) return;
+  if (state.activeId === instance.id && state.page === "library" && !state.modal && !state.accountMenu) return;
+  state.activeId = instance.id;
+  state.selectedVersion = instance.version;
+  state.page = "library";
+  state.modal = null;
+  state.accountMenu = false;
+  render();
+}
+
 function bindEvents() {
   bindCustomSelects();
   if (state.page === "mods") modsFeature.bind();
-  document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => {
-    state.page = button.dataset.page;
-    state.modal = null;
-    state.accountMenu = false;
-    render();
-  }));
-  document.querySelectorAll("[data-instance]").forEach((button) => button.addEventListener("click", () => {
-    state.activeId = button.dataset.instance;
-    state.selectedVersion = activeInstance().version;
-    state.page = "library";
-    state.modal = null;
-    state.accountMenu = false;
-    render();
-  }));
   document.querySelectorAll("[data-context-action]").forEach((button) => button.addEventListener("click", handleContextAction));
   document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", () => openModal(null)));
   document.querySelector("#instance-form")?.addEventListener("submit", saveInstance);
@@ -739,14 +789,7 @@ function bindEvents() {
   document.querySelector("#manage-mods")?.addEventListener("click", openMods);
   document.querySelector("#open-data")?.addEventListener("click", () => callSimple("open_data_folder", {}, "Data folder opened."));
   document.querySelector("#signin")?.addEventListener("click", login);
-  document.querySelector("#account-trigger")?.addEventListener("click", () => {
-    state.accountMenu = !state.accountMenu;
-    dismissContextMenu(false);
-    render();
-  });
-  document.querySelector("#add-account")?.addEventListener("click", login);
-  document.querySelectorAll("[data-select-account]").forEach((button) => button.addEventListener("click", selectAccount));
-  document.querySelectorAll("[data-remove-account]").forEach((button) => button.addEventListener("click", removeAccount));
+  bindAccountMenuEvents();
   document.querySelector("#primary-action")?.addEventListener("click", state.data.account ? launch : login);
   document.querySelector("#launch-version")?.addEventListener("change", (event) => {
     state.selectedVersion = event.target.value;
@@ -781,9 +824,7 @@ function openContextMenu(event) {
   event.preventDefault();
   if (!state.data || event.target.closest(".context-menu")) return;
   closeCustomSelects();
-  state.accountMenu = false;
-  document.querySelector(".account-popover")?.remove();
-  document.querySelector("#account-trigger")?.setAttribute("aria-expanded", "false");
+  closeAccountMenu();
 
   const instanceElement = !state.modal ? event.target.closest("[data-instance]") : null;
   const editable = event.target.closest('textarea, [contenteditable="true"], input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not([type="hidden"])');

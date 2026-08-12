@@ -18,7 +18,11 @@
   color: var(--text);
 }
 
-* { box-sizing: border-box; }
+*, *::before, *::after {
+  box-sizing: border-box;
+  -webkit-user-select: none;
+  user-select: none;
+}
 html, body, #app { width: 100%; height: 100%; }
 
 body {
@@ -441,7 +445,7 @@ button, input[type="range"], input[type="checkbox"] { cursor: pointer; }
   align-items: center;
   gap: 11px;
   min-width: 0;
-  min-height: 64px;
+  min-height: 48px;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: 7px;
@@ -453,9 +457,8 @@ button, input[type="range"], input[type="checkbox"] { cursor: pointer; }
 .instance-tool > .icon:first-child { width: 18px; height: 18px; color: var(--accent); }
 .instance-tool > .icon:last-child { width: 11px; height: 11px; color: var(--muted-2); }
 .instance-tool > span { min-width: 0; flex: 1; }
-.instance-tool strong, .instance-tool small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.instance-tool strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .instance-tool strong { color: var(--text); font-size: 11px; font-weight: 600; }
-.instance-tool small { margin-top: 4px; color: var(--muted-2); font-size: 8px; }
 .section-heading { display: flex; align-items: end; gap: 9px; margin-bottom: 12px; }
 .section-heading h3 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.02em; }
 .count-badge { margin-bottom: 1px; color: var(--muted-2); font-size: 9px; }
@@ -733,7 +736,7 @@ input[type="range"] { width: 200px; height: 3px; accent-color: var(--accent); }
 .console-search i { width: 15px; font-size: 9px; }
 .console-search input { min-width: 0; width: 100%; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 9px; cursor: text; }
 .console-search input::placeholder { color: #555; }
-.console-output { min-height: 0; overflow: auto; padding: 9px 0 22px; color: #b8b8b8; background: #000; scrollbar-width: thin; scrollbar-color: #292929 transparent; user-select: text; }
+.console-output { min-height: 0; overflow: auto; padding: 9px 0 22px; color: #b8b8b8; background: #000; scrollbar-width: thin; scrollbar-color: #292929 transparent; }
 .console-line { display: grid; grid-template-columns: 68px minmax(0, 1fr); min-height: 21px; padding: 2px 14px; font: 10px/1.7 "Cascadia Mono", "Consolas", monospace; }
 .console-line:hover { background: #070707; }
 .console-line time { color: #4f4f4f; user-select: none; }

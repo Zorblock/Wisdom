@@ -1,7 +1,7 @@
 {
   "name": "wisdom-launcher",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0-beta",
   "description": "Wisdom Minecraft Launcher",
   "type": "module",
   "scripts": {

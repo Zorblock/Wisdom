@@ -11,6 +11,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const API_BASE: &str = "https://api.modrinth.com/v2";
+const RELEASE_VERSION_TYPE: &str = "release";
 const MANIFEST_VERSION: u32 = 1;
 const MAX_MOD_SIZE: u64 = 1_073_741_824;
 
@@ -547,10 +548,8 @@ fn install_project(
         return Ok(());
     }
 
-    let version = match exact_version {
-        Some(version_id) => fetch_version(client, version_id)?,
-        None => fetch_latest_version(client, project_id, loader, &instance.version)?,
-    };
+    let version =
+        fetch_release_version(client, project_id, exact_version, loader, &instance.version)?;
     if version.project_id != project_id {
         bail!("Modrinth returned a version for the wrong project");
     }
@@ -685,10 +684,7 @@ fn resolve_migration_project(
     if !resolving.insert(project_id.to_owned()) {
         return Ok(());
     }
-    let version = match exact_version {
-        Some(version_id) => fetch_version(client, version_id)?,
-        None => fetch_latest_version(client, project_id, loader, game_version)?,
-    };
+    let version = fetch_release_version(client, project_id, exact_version, loader, game_version)?;
     if version.project_id != project_id {
         bail!("Modrinth returned a version for the wrong project");
     }
@@ -743,6 +739,25 @@ fn fetch_version(client: &Client, version_id: &str) -> Result<ApiVersion> {
         .json()?)
 }
 
+fn fetch_release_version(
+    client: &Client,
+    project_id: &str,
+    exact_version: Option<&str>,
+    loader: &str,
+    game_version: &str,
+) -> Result<ApiVersion> {
+    if let Some(version_id) = exact_version {
+        let version = fetch_version(client, version_id)?;
+        if version.project_id != project_id {
+            bail!("Modrinth returned a version for the wrong project");
+        }
+        if version.version_type == RELEASE_VERSION_TYPE {
+            return Ok(version);
+        }
+    }
+    fetch_latest_version(client, project_id, loader, game_version)
+}
+
 fn fetch_latest_version(
     client: &Client,
     project_id: &str,
@@ -762,12 +777,10 @@ fn fetch_latest_version(
         .error_for_status()?
         .json()?;
     versions
-        .iter()
-        .find(|version| version.version_type == "release")
-        .or_else(|| versions.first())
-        .cloned()
+        .into_iter()
+        .find(|version| version.version_type == RELEASE_VERSION_TYPE)
         .with_context(|| {
-            format!("No compatible {loader} version is available for Minecraft {game_version}")
+            format!("No stable {loader} release is available for Minecraft {game_version}")
         })
 }
 
@@ -785,7 +798,8 @@ fn fetch_updates(
     if hashes.is_empty() {
         return Ok(HashMap::new());
     }
-    let response: HashMap<String, Option<ApiVersion>> = http()?
+    let client = http()?;
+    let response: HashMap<String, Option<ApiVersion>> = client
         .post(format!("{API_BASE}/version_files/update"))
         .json(&UpdateRequest {
             hashes,
@@ -796,13 +810,27 @@ fn fetch_updates(
         .send()?
         .error_for_status()?
         .json()?;
-    Ok(response
-        .into_iter()
-        .filter_map(|(hash, version)| version.map(|version| (hash, version)))
-        .collect())
+    let mut updates = HashMap::new();
+    for item in manifest.mods.iter().filter(|item| item.explicit) {
+        let Some(candidate) = response.get(&item.sha512).and_then(Option::as_ref) else {
+            continue;
+        };
+        let release = if candidate.version_type == RELEASE_VERSION_TYPE {
+            Some(candidate.clone())
+        } else {
+            fetch_latest_version(&client, &item.project_id, loader, game_version).ok()
+        };
+        if let Some(release) = release {
+            updates.insert(item.sha512.clone(), release);
+        }
+    }
+    Ok(updates)
 }
 
 fn ensure_compatible(version: &ApiVersion, loader: &str, game_version: &str) -> Result<()> {
+    if version.version_type != RELEASE_VERSION_TYPE {
+        bail!("Only stable Modrinth releases can be installed");
+    }
     if !version.loaders.iter().any(|value| value == loader)
         || !version
             .game_versions
