@@ -167,7 +167,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     if (state.searching && !state.results.length) return `<div class="mods-placeholder"><span class="spinner"></span><span>Searching Modrinth...</span></div>`;
     if (!state.results.length) return `<div class="mods-empty">No compatible mods found.</div>`;
     const installed = installedIds();
-    return state.results.map((item) => {
+    const cards = state.results.map((item) => {
       const isInstalled = installed.has(item.projectId);
       const activeAction = actionFor(item.projectId);
       const categories = (item.categories || []).slice(0, 3).map((category) => `<span>${escapeHtml(category.replaceAll("-", " "))}</span>`).join("");
@@ -185,6 +185,8 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
           </button>
         </article>`;
     }).join("");
+    const emptySlots = state.totalHits > 24 ? Math.max(0, 24 - state.results.length) : 0;
+    return cards + Array.from({ length: emptySlots }, () => `<div class="modrinth-result modrinth-result-placeholder" aria-hidden="true"></div>`).join("");
   }
 
   function render(instance) {
