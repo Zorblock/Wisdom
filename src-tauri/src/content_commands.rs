@@ -1,8 +1,17 @@
 use crate::RuntimeState;
 use crate::modrinth::{self, InstalledModView, SearchResults};
 use crate::storage;
+use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModInstallProgressEvent {
+    instance_id: String,
+    project_id: String,
+    progress: f32,
+}
 
 #[tauri::command]
 pub async fn list_instance_mods(
@@ -78,13 +87,26 @@ pub async fn install_modrinth_mod(
 ) -> Result<Vec<InstalledModView>, String> {
     ensure_stopped(&state, &instance_id)?;
     let operation_lock = Arc::clone(&state.content_operations);
+    let progress_app = app.clone();
+    let progress_instance_id = instance_id.clone();
+    let progress_project_id = project_id.clone();
     let _ = app.emit("status", "Installing mod and required dependencies...");
     let result = run_blocking(move || {
         let _guard = operation_lock
             .lock()
             .map_err(|_| anyhow::anyhow!("Could not lock mod operations"))?;
         let root = storage::user_data_dir()?;
-        modrinth::install(&root, &instance_id, &project_id)
+        let report = move |progress: f32| {
+            let _ = progress_app.emit(
+                "mod-install-progress",
+                ModInstallProgressEvent {
+                    instance_id: progress_instance_id.clone(),
+                    project_id: progress_project_id.clone(),
+                    progress: progress.clamp(0.0, 1.0),
+                },
+            );
+        };
+        modrinth::install(&root, &instance_id, &project_id, &report)
     })
     .await;
     if result.is_ok() {

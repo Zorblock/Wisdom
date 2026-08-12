@@ -96,6 +96,9 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
   const installedIds = () => new Set(state.mods.map((item) => item.projectId));
   const actionFor = (projectId) => state.actions.get(`${state.instanceId}:${projectId}`) || null;
   const hasActions = () => state.actions.size > 0;
+  const actionLabel = (action) => action.phase === "queued"
+    ? "Queued"
+    : `${action.label}${action.kind === "install" ? ` ${Math.round((action.progress || 0) * 100)}%` : ""}`;
 
   function visibleInstalledMods() {
     const query = state.installedQuery.trim().toLowerCase();
@@ -177,7 +180,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
             ${categories ? `<span class="result-categories">${categories}</span>` : ""}
           </span>
           <button class="button ${isInstalled ? "secondary" : "primary"} ${activeAction ? "action-button" : ""}" data-install-mod="${escapeHtml(item.projectId)}" ${isInstalled || locked || activeAction ? "disabled" : ""} aria-live="polite">
-            ${activeAction ? `<span class="spinner"></span>${escapeHtml(activeAction.phase === "queued" ? "Queued" : activeAction.label)}&hellip;` : `${icon(isInstalled ? "check" : "download")}${isInstalled ? "Installed" : "Install"}`}
+            ${activeAction ? `<span class="spinner"></span>${escapeHtml(actionLabel(activeAction))}` : `${icon(isInstalled ? "check" : "download")}${isInstalled ? "Installed" : "Install"}`}
           </button>
         </article>`;
     }).join("");
@@ -277,7 +280,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
       const button = document.querySelector("#update-all-mods");
       if (action && button) {
         button.disabled = true;
-        button.innerHTML = `<span class="spinner"></span>${escapeHtml(action.phase === "queued" ? "Queued" : action.label)}&hellip;`;
+        button.innerHTML = `<span class="spinner"></span>${escapeHtml(actionLabel(action))}`;
       }
       return;
     }
@@ -286,7 +289,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
       if (!action) return;
       button.disabled = true;
       button.classList.add("action-button");
-      button.innerHTML = `<span class="spinner"></span>${escapeHtml(action.phase === "queued" ? "Queued" : action.label)}&hellip;`;
+      button.innerHTML = `<span class="spinner"></span>${escapeHtml(actionLabel(action))}`;
     });
     const article = document.querySelector(`[data-install-mod="${CSS.escape(projectId)}"]`)?.closest(".modrinth-result");
     article?.classList.toggle("mod-action-active", Boolean(action));
@@ -318,6 +321,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
       label: copy.label,
       detail: copy.detail,
       phase: "queued",
+      progress: 0,
       instanceId: instance.id,
     };
     state.actions.set(actionId, action);
@@ -371,6 +375,14 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     }
   }
 
+  function updateProgress(payload) {
+    if (!payload?.instanceId || !payload?.projectId) return;
+    const action = state.actions.get(`${payload.instanceId}:${payload.projectId}`);
+    if (!action || action.kind !== "install") return;
+    action.progress = Math.max(action.progress || 0, Math.min(1, Number(payload.progress) || 0));
+    if (state.instanceId === payload.instanceId) syncActionButton(payload.projectId);
+  }
+
   function bind() {
     document.querySelector("#mods-back")?.addEventListener("click", goBack);
     document.querySelector("#refresh-mods")?.addEventListener("click", () => loadMods(true));
@@ -421,5 +433,5 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     await Promise.all([loadMods(true), search(0)]);
   }
 
-  return { render, bind, open };
+  return { render, bind, open, updateProgress };
 }

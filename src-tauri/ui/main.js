@@ -1533,6 +1533,7 @@ async function init() {
       state.progress = Math.max(0, Math.min(1, Number(event.payload) || 0));
       updateStatusDom();
     });
+    await listen("mod-install-progress", (event) => modsFeature.updateProgress(event.payload));
     await listen("instance-status", (event) => {
       const { instanceId, running } = event.payload || {};
       if (!instanceId || !state.data) return;

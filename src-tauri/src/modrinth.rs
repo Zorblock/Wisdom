@@ -393,12 +393,36 @@ pub fn list_installed(
     Ok(result)
 }
 
-pub fn install(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<InstalledModView>> {
+pub fn install(
+    root: &Path,
+    instance_id: &str,
+    project_id: &str,
+    report_progress: &(dyn Fn(f32) + Send + Sync),
+) -> Result<Vec<InstalledModView>> {
     validate_project_id(project_id)?;
     let instance = instances::load(root, instance_id)?;
     let loader = require_loader(&instance)?;
     let client = http()?;
     let mut manifest = load_manifest(root, &instance)?;
+    report_progress(0.0);
+    let mut planned_versions = HashMap::new();
+    let mut planning = HashSet::new();
+    resolve_migration_project(
+        &client,
+        project_id,
+        None,
+        loader,
+        &instance.version,
+        &mut planned_versions,
+        &mut planning,
+    )?;
+    let total_bytes = planned_versions
+        .values()
+        .map(|version| select_file(version).map(|file| file.size))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .sum::<u64>();
+    let mut install_progress = ModInstallProgress::new(total_bytes, report_progress);
     let mut resolving = HashSet::new();
     let result = install_project(
         &client,
@@ -410,6 +434,8 @@ pub fn install(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<I
         true,
         &mut manifest,
         &mut resolving,
+        Some(&planned_versions),
+        Some(&mut install_progress),
     );
     if let Err(error) = result {
         garbage_collect(root, &instance, &mut manifest)?;
@@ -417,6 +443,7 @@ pub fn install(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<I
         return Err(error);
     }
     save_manifest(root, &instance, &manifest)?;
+    report_progress(1.0);
     list_installed(root, instance_id, true)
 }
 
@@ -495,6 +522,8 @@ pub fn update(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<In
         explicit,
         &mut manifest,
         &mut resolving,
+        None,
+        None,
     )?;
     garbage_collect(root, &instance, &mut manifest)?;
     save_manifest(root, &instance, &manifest)?;
@@ -524,6 +553,8 @@ pub fn update_all(root: &Path, instance_id: &str) -> Result<Vec<InstalledModView
             true,
             &mut manifest,
             &mut resolving,
+            None,
+            None,
         )?;
     }
     garbage_collect(root, &instance, &mut manifest)?;
@@ -542,14 +573,20 @@ fn install_project(
     explicit: bool,
     manifest: &mut ContentManifest,
     resolving: &mut HashSet<String>,
+    planned_versions: Option<&HashMap<String, ApiVersion>>,
+    mut install_progress: Option<&mut ModInstallProgress<'_>>,
 ) -> Result<()> {
     validate_project_id(project_id)?;
     if !resolving.insert(project_id.to_owned()) {
         return Ok(());
     }
 
-    let version =
-        fetch_release_version(client, project_id, exact_version, loader, &instance.version)?;
+    let version = match planned_versions.and_then(|versions| versions.get(project_id)) {
+        Some(version) => version.clone(),
+        None => {
+            fetch_release_version(client, project_id, exact_version, loader, &instance.version)?
+        }
+    };
     if version.project_id != project_id {
         bail!("Modrinth returned a version for the wrong project");
     }
@@ -594,6 +631,8 @@ fn install_project(
             false,
             manifest,
             resolving,
+            planned_versions,
+            install_progress.as_deref_mut(),
         )?;
     }
 
@@ -619,7 +658,14 @@ fn install_project(
     let enabled = previous.as_ref().is_none_or(|item| item.enabled);
     let destination = managed_path_for(&directory, &file_name, enabled)?;
     if !destination.is_file() || sha512_file(&destination)? != sha512 {
-        download_mod(client, file, &destination, &sha512)?;
+        download_mod(client, file, &destination, &sha512, |received| {
+            if let Some(progress) = install_progress.as_deref_mut() {
+                progress.update_current(project_id, received, file.size);
+            }
+        })?;
+    }
+    if let Some(progress) = install_progress.as_deref_mut() {
+        progress.finish_file(project_id, file.size);
     }
 
     let installed = InstalledMod {
@@ -861,7 +907,13 @@ fn is_installable_jar(file: &ApiFile) -> bool {
         )
 }
 
-fn download_mod(client: &Client, file: &ApiFile, destination: &Path, expected: &str) -> Result<()> {
+fn download_mod(
+    client: &Client,
+    file: &ApiFile,
+    destination: &Path,
+    expected: &str,
+    mut on_progress: impl FnMut(u64),
+) -> Result<()> {
     if file.size > MAX_MOD_SIZE {
         bail!("Mod file is unexpectedly large");
     }
@@ -887,6 +939,7 @@ fn download_mod(client: &Client, file: &ApiFile, destination: &Path, expected: &
             break;
         }
         received += count as u64;
+        on_progress(received);
         if received > MAX_MOD_SIZE {
             let _ = fs::remove_file(&temporary);
             bail!("Mod download exceeded the size limit");
@@ -905,6 +958,49 @@ fn download_mod(client: &Client, file: &ApiFile, destination: &Path, expected: &
     }
     fs::rename(temporary, destination)?;
     Ok(())
+}
+
+struct ModInstallProgress<'a> {
+    total: u64,
+    completed: u64,
+    current: u64,
+    finished: HashSet<String>,
+    report: &'a (dyn Fn(f32) + Send + Sync),
+}
+
+impl<'a> ModInstallProgress<'a> {
+    fn new(total: u64, report: &'a (dyn Fn(f32) + Send + Sync)) -> Self {
+        Self {
+            total: total.max(1),
+            completed: 0,
+            current: 0,
+            finished: HashSet::new(),
+            report,
+        }
+    }
+
+    fn update_current(&mut self, project_id: &str, received: u64, file_size: u64) {
+        if self.finished.contains(project_id) {
+            return;
+        }
+        self.current = received.min(file_size);
+        self.emit();
+    }
+
+    fn finish_file(&mut self, project_id: &str, file_size: u64) {
+        if !self.finished.insert(project_id.to_owned()) {
+            return;
+        }
+        self.completed = self.completed.saturating_add(file_size);
+        self.current = 0;
+        self.emit();
+    }
+
+    fn emit(&self) {
+        ((self.report)(
+            ((self.completed + self.current) as f64 / self.total as f64).clamp(0.0, 1.0) as f32,
+        ));
+    }
 }
 
 fn garbage_collect(root: &Path, instance: &Instance, manifest: &mut ContentManifest) -> Result<()> {
