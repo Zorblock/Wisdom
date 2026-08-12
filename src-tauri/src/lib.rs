@@ -870,10 +870,10 @@ pub fn run() {
             instance_migration::migrate_instance,
             launch,
         ])
-        .setup(|app| {
+        .setup(|_app| {
             #[cfg(debug_assertions)]
             {
-                let handle = app.handle().clone();
+                let handle = _app.handle().clone();
                 ctrlc::set_handler(move || handle.exit(0))?;
             }
             Ok(())

@@ -11,8 +11,12 @@ npm run dev       # start the launcher
 npm run check     # compile check
 npm run build     # build the Tauri frontend
 npm run build:release # build Wisdom.exe without an installer
-npm run setup     # build and create the Inno Setup installer
+npm run release   # create the Windows x64 portable app and installer
 ```
+
+`npm run release` currently targets Windows x64 only. It writes the distributable files and
+SHA-256 checksums to `release/<version>/windows-x64/` and the manifest to
+`release/<version>/release.json`. The command does not upload or publish anything.
 
 ## Microsoft login
 

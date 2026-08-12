@@ -16,6 +16,11 @@ tauri-build = { version = "2", features = [] }
 debug = 0
 incremental = true
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
 [dependencies]
 anyhow = "1.0"
 base64 = "0.22"

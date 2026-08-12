@@ -11,7 +11,8 @@
     "check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "build": "vite build --config src-tauri/vite.config.js",
     "build:release": "tauri build --no-bundle",
-    "setup": "npm run build:release && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-installer.ps1"
+    "release": "node ./scripts/release.mjs",
+    "release:windows": "node ./scripts/release.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

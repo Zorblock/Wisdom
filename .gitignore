@@ -3,7 +3,7 @@
 /src-tauri/dist/
 /node_modules/
 /dist/
-/installer/output/
+/release/
 /userData/
 *.exe
 .tools
