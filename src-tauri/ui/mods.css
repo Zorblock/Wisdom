@@ -15,6 +15,9 @@
 .compatibility-note { margin: 0 0 2px auto; color: var(--muted-2); font-size: 8px; }
 .content-navigation { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 14px; }
 .content-type-tabs, .content-view-tabs { display: flex; align-items: center; gap: 3px; }
+.content-navigation-actions { display: flex; align-items: center; gap: 7px; }
+.release-channel-select { width: 112px; }
+.release-channel-select .select-trigger { height: 31px; }
 .content-type-tab, .content-view-tab { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 10px; border: 1px solid transparent; border-radius: 5px; color: var(--muted); background: transparent; font-size: 9px; font-weight: 580; }
 .content-type-tab:hover, .content-view-tab:hover { color: var(--text); background: #0b0b0b; }
 .content-type-tab:disabled { cursor: default; opacity: .35; background: transparent; }
@@ -63,6 +66,7 @@
 .mod-state, .mod-actions { display: flex; align-items: center; gap: 5px; flex: 0 0 auto; }
 .mod-tag { padding: 4px 6px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); background: #080808; font-size: 7px; font-weight: 620; }
 .mod-tag.update { border-color: rgba(var(--accent-rgb), .35); color: var(--accent); background: rgba(var(--accent-rgb), .08); }
+.mod-tag.prerelease { border-color: #4c415d; color: #b49acb; background: #0b080f; }
 .mod-tag.warning { border-color: #584125; color: #d7a865; background: #100b05; }
 .mod-tag.action-tag { display: inline-flex; align-items: center; gap: 4px; border-color: rgba(var(--accent-rgb), .38); color: var(--accent); background: rgba(var(--accent-rgb), .09); }
 .mod-tag.action-tag .spinner { width: 9px; height: 9px; margin: 0; border-width: 1px; }
@@ -93,6 +97,7 @@
   .content-navigation { align-items: stretch; flex-direction: column; }
   .content-type-tabs { overflow-x: auto; }
   .content-view-tabs { align-self: flex-start; }
+  .content-navigation-actions { justify-content: space-between; }
   .discover-toolbar { grid-template-columns: 1fr 1fr; }
   .discover-toolbar .mods-search { grid-column: 1 / -1; }
   .installed-toolbar { grid-template-columns: 1fr 150px 36px; }

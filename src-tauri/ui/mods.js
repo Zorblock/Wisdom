@@ -15,6 +15,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     enabledFirst: true,
     searchIndex: "relevance",
     category: "all",
+    releaseChannel: "release",
     offset: 0,
     totalHits: 0,
     loadingMods: false,
@@ -25,6 +26,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     error: null,
     request: 0,
     loadRequest: 0,
+    confirmation: null,
   };
   let searchTimer;
 
@@ -50,6 +52,11 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     { value: "follows", label: "Followers" },
     { value: "updated", label: "Recently updated" },
     { value: "newest", label: "Newest" },
+  ];
+  const releaseChannelOptions = [
+    { value: "release", label: "Stable" },
+    { value: "beta", label: "Beta" },
+    { value: "alpha", label: "Alpha" },
   ];
   const categoryOptions = [
     { value: "all", label: "All categories" },
@@ -156,6 +163,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
             <span title="${escapeHtml(item.fileName)}">${escapeHtml(item.fileName)} &middot; ${formatSize(item.fileSize)}</span>
           </span>
           <span class="mod-state">
+            ${item.versionType && item.versionType !== "release" ? `<span class="mod-tag prerelease">${item.versionType === "beta" ? "Beta" : "Alpha"}</span>` : ""}
             ${!item.enabled ? `<span class="mod-tag">Disabled</span>` : ""}
             ${item.missing ? `<span class="mod-tag warning">Missing file</span>` : ""}
             ${!item.compatible ? `<span class="mod-tag warning">Incompatible</span>` : ""}
@@ -164,7 +172,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
           <span class="mod-actions">
             ${activeAction ? `<span class="mod-action-spinner" role="status" aria-label="${escapeHtml(activeAction.label)} ${escapeHtml(item.title)}"><span class="spinner"></span></span>` : `
               <button class="icon-button" data-toggle-mod="${escapeHtml(item.projectId)}" data-enable="${!item.enabled}" title="${item.enabled ? "Disable" : "Enable"} mod" aria-label="${item.enabled ? "Disable" : "Enable"} ${escapeHtml(item.title)}" ${locked || item.missing ? "disabled" : ""}>${icon("power")}</button>
-              ${(item.updateAvailable || item.missing) ? `<button class="icon-button" data-update-mod="${escapeHtml(item.projectId)}" title="${item.missing ? "Repair" : "Update"} mod" aria-label="Update ${escapeHtml(item.title)}" ${locked ? "disabled" : ""}>${icon("refresh")}</button>` : ""}
+              ${(item.explicit || item.missing) ? `<button class="icon-button" data-update-mod="${escapeHtml(item.projectId)}" title="${item.missing ? "Repair" : "Check for update"}" aria-label="Update ${escapeHtml(item.title)}" ${locked ? "disabled" : ""}>${icon("refresh")}</button>` : ""}
               ${item.explicit ? `<button class="icon-button danger-icon" data-remove-mod="${escapeHtml(item.projectId)}" title="Remove mod and unused dependencies" aria-label="Remove ${escapeHtml(item.title)}" ${locked ? "disabled" : ""}>${icon("trash")}</button>` : ""}
             `}
           </span>
@@ -219,7 +227,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
         ${state.error ? `<div class="mods-error">${icon("warning")}<span>${escapeHtml(state.error)}</span></div>` : ""}
         <div class="content-navigation">
           <div class="content-type-tabs">${contentTypes.map(([value, iconName, label]) => `<button class="content-type-tab ${state.contentType === value ? "active" : ""}" data-content-type="${value}" ${value === "mod" && instance.loader === "vanilla" ? `disabled title="Select a mod loader to install mods"` : ""}>${icon(iconName)}<span>${label}</span></button>`).join("")}</div>
-          ${supportsInstalled() ? `<div class="content-view-tabs"><button class="content-view-tab ${state.viewMode === "installed" ? "active" : ""}" data-content-view="installed">Installed</button><button class="content-view-tab ${state.viewMode === "discover" ? "active" : ""}" data-content-view="discover">Download</button></div>` : ""}
+          <div class="content-navigation-actions"><div class="compact-select release-channel-select">${customSelect("modrinth-release-channel", state.releaseChannel, releaseChannelOptions, "Release channel")}</div>${supportsInstalled() ? `<div class="content-view-tabs"><button class="content-view-tab ${state.viewMode === "installed" ? "active" : ""}" data-content-view="installed">Installed</button><button class="content-view-tab ${state.viewMode === "discover" ? "active" : ""}" data-content-view="discover">Download</button></div>` : ""}</div>
         </div>
         ${state.viewMode === "installed" && supportsInstalled() ? `<section class="mods-section content-panel">
           <div class="section-heading"><h3>Installed</h3><span class="count-badge">${visibleInstalledMods().length}/${state.mods.length}</span></div>
@@ -243,7 +251,21 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
           <div class="modrinth-results ${state.results.length ? "has-results" : ""} ${state.searching ? "is-loading" : ""}">${renderSearchResults()}</div>
           ${state.totalHits > 24 ? `<div class="mods-pagination"><button id="mods-previous" class="button secondary" ${state.offset === 0 || state.searching ? "disabled" : ""}>Previous</button><span>${state.offset + 1}&ndash;${Math.min(state.offset + 24, state.totalHits)} of ${state.totalHits}</span><button id="mods-next" class="button secondary" ${state.offset + 24 >= state.totalHits || state.searching ? "disabled" : ""}>Next</button></div>` : ""}
         </section>`}
-      </div>`;
+      </div>
+      ${renderConfirmation(instance)}`;
+  }
+
+  function renderConfirmation(instance) {
+    const pending = state.confirmation;
+    if (!pending) return "";
+    const channel = pending.choice.versionType === "beta" ? "Beta" : "Alpha";
+    const action = pending.kind === "update" ? "Update to" : "Install";
+    return `<div class="modal-backdrop prerelease-backdrop"><section class="modal compact prerelease-modal" role="dialog" aria-modal="true" aria-labelledby="prerelease-title">
+      <div class="danger-mark">${icon("warning")}</div>
+      <h2 id="prerelease-title">${channel} version available</h2>
+      <p>No stable version of ${escapeHtml(pending.choice.title)} is available for Minecraft ${escapeHtml(instance.version)}. ${action} ${escapeHtml(pending.choice.versionNumber)} (${channel}) instead?</p>
+      <div class="modal-actions"><button id="cancel-prerelease" class="button secondary">Cancel</button><button id="confirm-prerelease" class="button primary">${action} ${channel}</button></div>
+    </section></div>`;
   }
 
   async function loadMods(refreshUpdates = true) {
@@ -362,6 +384,83 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     pumpActions();
   }
 
+  async function resolveAction(command, kind, projectId, successMessage, extra = {}) {
+    const instance = getInstance();
+    const contentType = state.contentType;
+    const releaseChannel = state.releaseChannel;
+    const actionId = `${instance?.id}:${projectId}`;
+    if (!instance || state.actions.has(actionId) || isRunning(instance.id)) return;
+    const item = state.mods.find((entry) => entry.projectId === projectId)
+      || state.results.find((entry) => entry.projectId === projectId);
+    state.actions.set(actionId, {
+      kind: "resolve",
+      projectId: actionId,
+      title: item?.title || contentLabel(),
+      label: "Checking",
+      detail: "Checking compatible versions",
+      phase: "active",
+      progress: 0,
+      instanceId: instance.id,
+    });
+    state.error = null;
+    syncActionButton(projectId);
+    setStatus(`Checking ${item?.title || contentLabel()} versions...`);
+    try {
+      const choice = await invoke("resolve_modrinth_install", {
+        instanceId: instance.id,
+        contentType,
+        projectId,
+        releaseChannel,
+      });
+      if (getInstance()?.id !== instance.id || state.contentType !== contentType) {
+        state.actions.delete(actionId);
+        return;
+      }
+      if (kind === "update" && !item?.missing && choice.versionNumber === item?.versionNumber) {
+        state.actions.delete(actionId);
+        notify(`${choice.title} is already up to date.`, "success");
+        setStatus(`${choice.title} is already up to date.`);
+        rerenderAnchored(projectId);
+        return;
+      }
+      const pending = { command, kind, projectId, successMessage, extra, choice, instanceId: instance.id, gameVersion: instance.version, contentType };
+      state.actions.delete(actionId);
+      if (choice.requiresConfirmation) {
+        state.confirmation = pending;
+        rerender();
+      } else {
+        dispatchResolved(pending);
+      }
+    } catch (error) {
+      state.actions.delete(actionId);
+      state.error = cleanError(error);
+      notify(state.error, "error");
+      setStatus(`Could not resolve a compatible version: ${state.error}`);
+      rerenderAnchored(projectId);
+    }
+  }
+
+  function dispatchResolved(pending) {
+    if (pending.contentType === "modpack") {
+      void installResolvedModpack(pending);
+      return;
+    }
+    runAction(
+      pending.command,
+      pending.kind,
+      pending.projectId,
+      pending.successMessage,
+      { ...pending.extra, versionId: pending.choice.versionId },
+    );
+  }
+
+  function confirmPrerelease() {
+    const pending = state.confirmation;
+    if (!pending) return;
+    state.confirmation = null;
+    dispatchResolved(pending);
+  }
+
   function pumpActions() {
     while (state.activeActions < 2 && state.actionQueue.length) {
       const job = state.actionQueue.shift();
@@ -420,9 +519,8 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     document.querySelectorAll("[data-content-type]").forEach((button) => button.addEventListener("click", () => switchContentType(button.dataset.contentType)));
     document.querySelectorAll("[data-content-view]").forEach((button) => button.addEventListener("click", () => { state.viewMode = button.dataset.contentView; rerender(); }));
     document.querySelectorAll("[data-install-mod]").forEach((button) => button.addEventListener("click", () => {
-      if (state.contentType === "modpack") return installModpack(button.dataset.installMod);
       const isMod = state.contentType === "mod";
-      runAction(isMod ? "install_modrinth_mod" : "install_modrinth_content", "install", button.dataset.installMod, isMod ? "Mod and required dependencies installed." : `${contentLabel()[0].toUpperCase()}${contentLabel().slice(1)} installed.`, isMod ? {} : { contentType: state.contentType });
+      resolveAction(isMod ? "install_modrinth_mod" : "install_modrinth_content", "install", button.dataset.installMod, isMod ? "Mod and required dependencies installed." : `${contentLabel()[0].toUpperCase()}${contentLabel().slice(1)} installed.`, isMod ? {} : { contentType: state.contentType });
     }));
     document.querySelectorAll("[data-remove-mod]").forEach((button) => button.addEventListener("click", () => {
       const isMod = state.contentType === "mod";
@@ -430,7 +528,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     }));
     document.querySelectorAll("[data-update-mod]").forEach((button) => button.addEventListener("click", () => {
       const isMod = state.contentType === "mod";
-      runAction(isMod ? "update_modrinth_mod" : "install_modrinth_content", "update", button.dataset.updateMod, `${contentLabel()[0].toUpperCase()}${contentLabel().slice(1)} updated.`, isMod ? {} : { contentType: state.contentType });
+      resolveAction(isMod ? "update_modrinth_mod" : "install_modrinth_content", "update", button.dataset.updateMod, `${contentLabel()[0].toUpperCase()}${contentLabel().slice(1)} updated.`, isMod ? {} : { contentType: state.contentType });
     }));
     document.querySelectorAll("[data-toggle-mod]").forEach((button) => button.addEventListener("click", () => {
       const enabled = button.dataset.enable === "true";
@@ -443,6 +541,9 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     document.querySelector("#installed-mod-sort")?.addEventListener("change", (event) => { state.installedSort = event.target.value; rerender(); });
     document.querySelector("#modrinth-category")?.addEventListener("change", (event) => { state.category = event.target.value; search(0); });
     document.querySelector("#modrinth-sort")?.addEventListener("change", (event) => { state.searchIndex = event.target.value; search(0); });
+    document.querySelector("#modrinth-release-channel")?.addEventListener("change", (event) => { state.releaseChannel = event.target.value; });
+    document.querySelector("#cancel-prerelease")?.addEventListener("click", () => { state.confirmation = null; rerender(); });
+    document.querySelector("#confirm-prerelease")?.addEventListener("click", confirmPrerelease);
     document.querySelector("#mods-previous")?.addEventListener("click", () => search(Math.max(0, state.offset - 24)));
     document.querySelector("#mods-next")?.addEventListener("click", () => search(state.offset + 24));
     document.querySelector("#installed-mod-search")?.addEventListener("input", (event) => {
@@ -477,17 +578,18 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     await Promise.all([loadMods(true), search(0)]);
   }
 
-  async function installModpack(projectId) {
+  async function installResolvedModpack(pending) {
     const source = getInstance();
+    const projectId = pending.projectId;
     const actionId = `${source?.id}:${projectId}`;
-    if (!source || state.actions.has(actionId)) return;
+    if (!source || source.id !== pending.instanceId || state.actions.has(actionId)) return;
     const item = state.results.find((result) => result.projectId === projectId);
     const action = {
       kind: "install",
       projectId: actionId,
       title: item?.title || "modpack",
       label: "Creating instance",
-      detail: "Resolving the stable release and pack configuration",
+      detail: `Preparing ${pending.choice.versionType} ${pending.choice.versionNumber}`,
       phase: "active",
       progress: 0,
       instanceId: source.id,
@@ -497,8 +599,9 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     setStatus(`Preparing ${action.title}...`);
     try {
       const instance = await invoke("install_modrinth_modpack", {
-        sourceInstanceId: source.id,
+        gameVersion: pending.gameVersion,
         projectId,
+        versionId: pending.choice.versionId,
       });
       notify(`${instance.name} is installing in the background.`, "success");
       onInstanceCreated(instance);

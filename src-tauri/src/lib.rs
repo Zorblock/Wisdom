@@ -14,6 +14,7 @@ mod modloaders;
 mod modpack;
 mod modrinth;
 mod modrinth_content;
+mod modrinth_versions;
 mod runtime;
 mod storage;
 
@@ -935,6 +936,9 @@ pub fn run() {
             content_commands::search_modrinth,
             content_commands::list_instance_content,
             content_commands::search_modrinth_content,
+            content_commands::search_modrinth_modpacks,
+            content_commands::resolve_modrinth_install,
+            content_commands::resolve_modrinth_modpack,
             content_commands::install_modrinth_content,
             content_commands::remove_modrinth_content,
             content_commands::set_modrinth_content_enabled,

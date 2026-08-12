@@ -1,6 +1,7 @@
 use crate::RuntimeState;
 use crate::modrinth::{self, InstalledModView, SearchResults};
 use crate::modrinth_content::{self, ContentKind, InstalledContentView};
+use crate::modrinth_versions::{ReleaseChannel, VersionChoice};
 use crate::storage;
 use crate::{instances, modpack};
 use serde::Serialize;
@@ -87,12 +88,77 @@ pub async fn search_modrinth_content(
 }
 
 #[tauri::command]
+pub async fn search_modrinth_modpacks(
+    game_version: String,
+    query: String,
+    index: String,
+    offset: usize,
+) -> Result<SearchResults, String> {
+    run_blocking(move || {
+        modrinth_content::search_for_version(
+            &game_version,
+            ContentKind::Modpack,
+            &query,
+            &index,
+            None,
+            offset,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn resolve_modrinth_install(
+    instance_id: String,
+    content_type: String,
+    project_id: String,
+    release_channel: ReleaseChannel,
+) -> Result<VersionChoice, String> {
+    run_blocking(move || {
+        let root = storage::user_data_dir()?;
+        match content_type.as_str() {
+            "mod" => modrinth::resolve_choice(&root, &instance_id, &project_id, release_channel),
+            "resourcepack" => modrinth_content::resolve_choice(
+                &root,
+                &instance_id,
+                ContentKind::Resourcepack,
+                &project_id,
+                release_channel,
+            ),
+            "shader" => modrinth_content::resolve_choice(
+                &root,
+                &instance_id,
+                ContentKind::Shader,
+                &project_id,
+                release_channel,
+            ),
+            "modpack" => {
+                let instance = instances::load(&root, &instance_id)?;
+                modpack::resolve_choice(&project_id, &instance.version, release_channel)
+            }
+            _ => anyhow::bail!("Unsupported Modrinth content type"),
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn resolve_modrinth_modpack(
+    game_version: String,
+    project_id: String,
+    release_channel: ReleaseChannel,
+) -> Result<VersionChoice, String> {
+    run_blocking(move || modpack::resolve_choice(&project_id, &game_version, release_channel)).await
+}
+
+#[tauri::command]
 pub async fn install_modrinth_content(
     app: AppHandle,
     state: State<'_, RuntimeState>,
     instance_id: String,
     content_type: ContentKind,
     project_id: String,
+    version_id: String,
 ) -> Result<Vec<InstalledContentView>, String> {
     ensure_stopped(&state, &instance_id)?;
     let operation_lock = Arc::clone(&state.content_operations);
@@ -114,7 +180,14 @@ pub async fn install_modrinth_content(
                 },
             );
         };
-        modrinth_content::install(&root, &instance_id, content_type, &project_id, &report)
+        modrinth_content::install(
+            &root,
+            &instance_id,
+            content_type,
+            &project_id,
+            &version_id,
+            &report,
+        )
     })
     .await
 }
@@ -162,13 +235,13 @@ pub async fn set_modrinth_content_enabled(
 pub async fn install_modrinth_modpack(
     app: AppHandle,
     state: State<'_, RuntimeState>,
-    source_instance_id: String,
+    game_version: String,
     project_id: String,
+    version_id: String,
 ) -> Result<instances::Instance, String> {
     let (root, instance, plan) = run_blocking(move || {
         let root = storage::user_data_dir()?;
-        let source = instances::load(&root, &source_instance_id)?;
-        let resolved = modpack::resolve(&project_id, &source.version)?;
+        let resolved = modpack::resolve_exact(&project_id, &game_version, &version_id)?;
         let existing = instances::load_all(&root)?;
         let instance = instances::create(
             &root,
@@ -233,6 +306,7 @@ pub async fn install_modrinth_mod(
     state: State<'_, RuntimeState>,
     instance_id: String,
     project_id: String,
+    version_id: String,
 ) -> Result<Vec<InstalledModView>, String> {
     ensure_stopped(&state, &instance_id)?;
     let operation_lock = Arc::clone(&state.content_operations);
@@ -255,7 +329,7 @@ pub async fn install_modrinth_mod(
                 },
             );
         };
-        modrinth::install(&root, &instance_id, &project_id, &report)
+        modrinth::install(&root, &instance_id, &project_id, &version_id, &report)
     })
     .await;
     if result.is_ok() {
@@ -293,6 +367,7 @@ pub async fn update_modrinth_mod(
     state: State<'_, RuntimeState>,
     instance_id: String,
     project_id: String,
+    version_id: String,
 ) -> Result<Vec<InstalledModView>, String> {
     ensure_stopped(&state, &instance_id)?;
     let operation_lock = Arc::clone(&state.content_operations);
@@ -302,7 +377,7 @@ pub async fn update_modrinth_mod(
             .lock()
             .map_err(|_| anyhow::anyhow!("Could not lock mod operations"))?;
         let root = storage::user_data_dir()?;
-        modrinth::update(&root, &instance_id, &project_id)
+        modrinth::update(&root, &instance_id, &project_id, &version_id)
     })
     .await;
     if result.is_ok() {

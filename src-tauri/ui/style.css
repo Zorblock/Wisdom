@@ -629,6 +629,7 @@ input[type="range"] { width: 200px; height: 3px; accent-color: var(--accent); }
   background: #000000d9;
 }
 .modal {
+  position: relative;
   width: min(500px, 100%);
   max-height: calc(100vh - 48px);
   overflow: auto;
@@ -637,6 +638,30 @@ input[type="range"] { width: 200px; height: 3px; accent-color: var(--accent); }
   border-radius: 8px;
   background: #060606;
 }
+.create-type-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin: -5px 0 18px; padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: #020202; }
+.create-type-tab { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; border: 1px solid transparent; border-radius: 4px; color: var(--muted); background: transparent; font-size: 9px; font-weight: 600; }
+.create-type-tab:hover { color: var(--text); background: #090909; }
+.create-type-tab.active { color: var(--text); border-color: var(--line); background: rgba(var(--accent-rgb), .12); }
+.create-type-tab.active .icon { color: var(--accent); }
+.modpack-create-modal { width: min(780px, 100%); overflow: visible; }
+.modpack-create-fields { min-height: 390px; }
+.modpack-picker-controls { display: grid; grid-template-columns: minmax(0, 1fr) 170px; gap: 9px; }
+.modpack-picker-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 170px; gap: 9px; margin-bottom: 9px; }
+.modpack-picker-results { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: min(390px, calc(100vh - 335px)); min-height: 175px; overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: #020202; scrollbar-width: thin; scrollbar-color: #292929 transparent; transition: opacity .12s ease; }
+.modpack-picker-results.is-loading { opacity: .62; }
+.modpack-picker-result { display: grid; grid-template-columns: 34px minmax(0, 1fr); grid-template-rows: minmax(68px, 1fr) 30px; gap: 8px 9px; min-width: 0; min-height: 120px; padding: 10px; box-shadow: inset -1px -1px var(--line); }
+.modpack-picker-result > span:nth-child(2) { min-width: 0; }
+.modpack-picker-result strong, .modpack-picker-result small, .modpack-picker-result em { display: block; overflow: hidden; text-overflow: ellipsis; }
+.modpack-picker-result strong { font-size: 10px; font-style: normal; font-weight: 620; white-space: nowrap; }
+.modpack-picker-result small { display: -webkit-box; margin-top: 3px; color: var(--muted); font-size: 8px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.modpack-picker-result em { margin-top: 4px; color: var(--muted-2); font-size: 7px; font-style: normal; white-space: nowrap; }
+.modpack-picker-result .button { grid-column: 1 / -1; min-height: 30px; }
+.modpack-picker-empty { display: flex; align-items: center; justify-content: center; grid-column: 1 / -1; min-height: 174px; color: var(--muted-2); font-size: 9px; }
+.modpack-confirmation { position: absolute; z-index: 3; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 30px; border-radius: inherit; text-align: center; background: #060606f7; }
+.modpack-confirmation h3 { margin: 8px 0 7px; font-size: 18px; }
+.modpack-confirmation p { max-width: 390px; margin: 0; color: var(--muted); font-size: 9px; line-height: 1.55; }
+.modpack-confirmation .modal-actions { margin-top: 18px; }
+.picker-modal-footer { justify-content: flex-end; padding-top: 14px; border-top: 1px solid var(--line); }
 .modal.compact { width: min(410px, 100%); text-align: center; }
 .modal.compact h2 { margin: 11px 0 7px; font-size: 18px; font-weight: 620; }
 .modal.compact p { margin: 0 auto; max-width: 330px; color: var(--muted); font-size: 9px; line-height: 1.6; }
@@ -775,6 +800,11 @@ input[type="range"] { width: 200px; height: 3px; accent-color: var(--accent); }
   .topbar, .content-scroll { padding-left: 26px; padding-right: 26px; }
   .settings-group { grid-template-columns: 1fr; gap: 11px; }
   .instance-tools { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 760px) {
+  .modpack-create-modal { overflow: auto; }
+  .modpack-picker-results { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 700px) {

@@ -1,5 +1,6 @@
 use crate::instances::{self, Instance};
 use crate::modrinth::{SearchHit, SearchResults};
+use crate::modrinth_versions::{self, ReleaseChannel, VersionChoice};
 use crate::storage::http;
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
@@ -54,6 +55,7 @@ pub struct InstalledContentView {
     pub project_id: String,
     pub title: String,
     pub version_number: String,
+    pub version_type: ReleaseChannel,
     pub icon_url: Option<String>,
     pub explicit: bool,
     pub enabled: bool,
@@ -83,6 +85,8 @@ struct InstalledContent {
     version_id: String,
     title: String,
     version_number: String,
+    #[serde(default)]
+    version_type: ReleaseChannel,
     file_name: String,
     sha512: String,
     icon_url: Option<String>,
@@ -158,6 +162,18 @@ pub fn search(
     offset: usize,
 ) -> Result<SearchResults> {
     let instance = instances::load(root, instance_id)?;
+    search_for_version(&instance.version, kind, query, index, category, offset)
+}
+
+pub fn search_for_version(
+    game_version: &str,
+    kind: ContentKind,
+    query: &str,
+    index: &str,
+    category: Option<&str>,
+    offset: usize,
+) -> Result<SearchResults> {
+    validate_game_version(game_version)?;
     let query = query.trim();
     if query.chars().count() > 100 {
         bail!("Search query is too long");
@@ -169,7 +185,7 @@ pub fn search(
         bail!("Invalid Modrinth sort option");
     }
     let mut facets = vec![
-        vec![format!("versions:{}", instance.version)],
+        vec![format!("versions:{game_version}")],
         vec![format!("project_type:{}", kind.project_type())],
     ];
     if let Some(category) = category.filter(|value| valid_category(value)) {
@@ -229,17 +245,18 @@ pub fn list_installed(
         .iter()
         .filter(|entry| entry.kind == kind)
         .map(|entry| {
-            let update = client
-                .as_ref()
-                .and_then(|client| {
+            let update = (entry.version_type == ReleaseChannel::Release)
+                .then_some(())
+                .and(client.as_ref().and_then(|client| {
                     latest_release(client, &entry.project_id, &instance.version).ok()
-                })
+                }))
                 .filter(|version| version.id != entry.version_id);
             let path = managed_path(&directory, &entry.file_name, entry.enabled).ok();
             InstalledContentView {
                 project_id: entry.project_id.clone(),
                 title: entry.title.clone(),
                 version_number: entry.version_number.clone(),
+                version_type: entry.version_type,
                 icon_url: safe_icon_url(entry.icon_url.clone()),
                 explicit: true,
                 enabled: entry.enabled,
@@ -269,6 +286,7 @@ pub fn install(
     instance_id: &str,
     kind: ContentKind,
     project_id: &str,
+    version_id: &str,
     report: &(dyn Fn(f32) + Send + Sync),
 ) -> Result<Vec<InstalledContentView>> {
     if kind == ContentKind::Modpack {
@@ -281,7 +299,19 @@ pub fn install(
     if project.project_type != kind.project_type() {
         bail!("The Modrinth project is not a {}", kind.label());
     }
-    let version = latest_release(&client, project_id, &instance.version)?;
+    let version = version(&client, version_id)?;
+    if version.project_id != project_id
+        || !version
+            .game_versions
+            .iter()
+            .any(|value| value == &instance.version)
+    {
+        bail!(
+            "The selected {} version is not compatible with Minecraft {}",
+            kind.label(),
+            instance.version
+        );
+    }
     let file = select_zip(&version)?;
     let sha512 = file
         .hashes
@@ -304,6 +334,7 @@ pub fn install(
         version_id: version.id,
         title: project.title,
         version_number: version.version_number,
+        version_type: ReleaseChannel::from_api(&version.version_type).unwrap_or_default(),
         file_name,
         sha512,
         icon_url: safe_icon_url(project.icon_url),
@@ -329,6 +360,49 @@ pub fn install(
     save_manifest(root, &instance, &manifest)?;
     report(1.0);
     list_installed(root, instance_id, kind, false)
+}
+
+pub fn resolve_choice(
+    root: &Path,
+    instance_id: &str,
+    kind: ContentKind,
+    project_id: &str,
+    requested: ReleaseChannel,
+) -> Result<VersionChoice> {
+    if kind == ContentKind::Modpack {
+        bail!("Modpacks must be installed as new instances");
+    }
+    validate_id(project_id)?;
+    let instance = instances::load(root, instance_id)?;
+    let client = http()?;
+    let project = project(&client, project_id)?;
+    if project.project_type != kind.project_type() {
+        bail!("The Modrinth project is not a {}", kind.label());
+    }
+    let versions = versions(&client, project_id, &instance.version)?;
+    let (version, channel, requires_confirmation) = modrinth_versions::choose(
+        &versions,
+        requested,
+        requested == ReleaseChannel::Release,
+        |version| version.version_type.as_str(),
+        |version| {
+            version.project_id == project_id
+                && version
+                    .game_versions
+                    .iter()
+                    .any(|value| value == &instance.version)
+                && select_zip(version).is_ok()
+        },
+    )
+    .with_context(|| unavailable_message(requested, kind, &instance.version))?;
+    Ok(VersionChoice {
+        project_id: project.id,
+        title: project.title,
+        version_id: version.id.clone(),
+        version_number: version.version_number.clone(),
+        version_type: channel,
+        requires_confirmation,
+    })
 }
 
 pub fn remove(
@@ -402,9 +476,17 @@ fn project(client: &Client, project_id: &str) -> Result<ApiProject> {
         .json()?)
 }
 
-fn latest_release(client: &Client, project_id: &str, game_version: &str) -> Result<ApiVersion> {
-    validate_id(project_id)?;
-    let versions: Vec<ApiVersion> = client
+fn version(client: &Client, version_id: &str) -> Result<ApiVersion> {
+    validate_id(version_id)?;
+    Ok(client
+        .get(format!("{API_BASE}/version/{version_id}"))
+        .send()?
+        .error_for_status()?
+        .json()?)
+}
+
+fn versions(client: &Client, project_id: &str, game_version: &str) -> Result<Vec<ApiVersion>> {
+    Ok(client
         .get(format!("{API_BASE}/project/{project_id}/version"))
         .query(&[
             ("game_versions", serde_json::to_string(&[game_version])?),
@@ -412,8 +494,12 @@ fn latest_release(client: &Client, project_id: &str, game_version: &str) -> Resu
         ])
         .send()?
         .error_for_status()?
-        .json()?;
-    versions
+        .json()?)
+}
+
+fn latest_release(client: &Client, project_id: &str, game_version: &str) -> Result<ApiVersion> {
+    validate_id(project_id)?;
+    versions(client, project_id, game_version)?
         .into_iter()
         .find(|version| {
             version.project_id == project_id
@@ -427,6 +513,23 @@ fn latest_release(client: &Client, project_id: &str, game_version: &str) -> Resu
         .with_context(|| {
             format!("No stable compatible release is available for Minecraft {game_version}")
         })
+}
+
+fn unavailable_message(channel: ReleaseChannel, kind: ContentKind, game_version: &str) -> String {
+    match channel {
+        ReleaseChannel::Release => format!(
+            "No compatible release, beta, or alpha {} is available for Minecraft {game_version}",
+            kind.label()
+        ),
+        ReleaseChannel::Beta => format!(
+            "No compatible beta {} is available for Minecraft {game_version}",
+            kind.label()
+        ),
+        ReleaseChannel::Alpha => format!(
+            "No compatible alpha {} is available for Minecraft {game_version}",
+            kind.label()
+        ),
+    }
 }
 
 fn select_zip(version: &ApiVersion) -> Result<&ApiFile> {
@@ -573,6 +676,14 @@ fn validate_id(value: &str) -> Result<()> {
             .all(|character| character.is_ascii_alphanumeric())
     {
         bail!("Invalid Modrinth project ID");
+    }
+    Ok(())
+}
+
+fn validate_game_version(value: &str) -> Result<()> {
+    if value.is_empty() || value.len() > 64 || value.chars().any(|character| character.is_control())
+    {
+        bail!("Invalid Minecraft version");
     }
     Ok(())
 }

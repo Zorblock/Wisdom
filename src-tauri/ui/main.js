@@ -4,6 +4,7 @@ import { AnsiUp } from "ansi_up";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { createModsFeature } from "./mods.js";
+import { createModpackPicker } from "./modpack_picker.js";
 import { initLogsView } from "./logs.js";
 
 const app = document.querySelector("#app");
@@ -25,6 +26,7 @@ const state = {
   page: "library",
   modal: null,
   pendingMigration: null,
+  createMode: "custom",
   contextMenu: null,
   contextTarget: null,
   contextSelection: "",
@@ -156,19 +158,39 @@ const modsFeature = createModsFeature({
     state.status = message;
     updateStatusDom();
   },
-  onInstanceCreated: (instance) => {
-    if (!state.data.instances.some((item) => item.id === instance.id)) state.data.instances.push(instance);
-    state.activeId = instance.id;
-    state.selectedVersion = instance.version;
-    state.page = "library";
-    state.status = `${instance.name} is installing in the background.`;
-    render();
-  },
+  onInstanceCreated: registerCreatedInstance,
   goBack: () => {
     state.page = "library";
     render();
   },
 });
+
+const modpackPicker = createModpackPicker({
+  invoke,
+  icon,
+  escapeHtml,
+  cleanError,
+  customSelect,
+  getVersionOptions: versionOptions,
+  getLatestVersion: () => state.data?.latestVersion || "",
+  notify,
+  rerender: render,
+  setStatus: (message) => {
+    state.status = message;
+    updateStatusDom();
+  },
+  onCreated: registerCreatedInstance,
+});
+
+function registerCreatedInstance(instance) {
+  if (!state.data.instances.some((item) => item.id === instance.id)) state.data.instances.push(instance);
+  state.activeId = instance.id;
+  state.selectedVersion = instance.version;
+  state.page = "library";
+  state.modal = null;
+  state.status = `${instance.name} is installing in the background.`;
+  render();
+}
 
 function activeInstance() {
   return state.data?.instances.find((instance) => instance.id === state.activeId) || state.data?.instances[0];
@@ -759,10 +781,23 @@ function renderModal() {
   }
   const editing = state.modal === "edit";
   const selected = editing ? instance.version : state.data.latestVersion;
+  const createTypeTabs = !editing ? `<div class="create-type-tabs" role="tablist" aria-label="Instance type"><button id="create-type-custom" type="button" class="create-type-tab ${state.createMode === "custom" ? "active" : ""}" role="tab" aria-selected="${state.createMode === "custom"}">${icon("instance")}Custom</button><button id="create-type-modpack" type="button" class="create-type-tab ${state.createMode === "modpack" ? "active" : ""}" role="tab" aria-selected="${state.createMode === "modpack"}">${icon("mods")}Modpack</button></div>` : "";
+  if (!editing && state.createMode === "modpack") {
+    return `
+      <div class="modal-backdrop">
+        <section class="modal modpack-create-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+          <div class="modal-header"><h2 id="modal-title">New instance</h2><button data-close-modal class="icon-button">${icon("close")}</button></div>
+          ${createTypeTabs}
+          ${modpackPicker.render()}
+          <div class="modal-actions picker-modal-footer"><button type="button" data-close-modal class="button secondary">Cancel</button></div>
+        </section>
+      </div>`;
+  }
   return `
     <div class="modal-backdrop">
       <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div class="modal-header"><h2 id="modal-title">${editing ? escapeHtml(instance.name) : "New instance"}</h2><button data-close-modal class="icon-button">${icon("close")}</button></div>
+        ${createTypeTabs}
         <form id="instance-form">
           <label class="field"><span>Name</span><input id="instance-name" maxlength="48" value="${editing ? escapeHtml(instance.name) : "New instance"}" required autofocus /></label>
           <div class="field"><span>Minecraft version</span>${customSelect("instance-version", selected, versionOptions(selected), "Minecraft version")}</div>
@@ -828,9 +863,21 @@ function selectInstance(instanceId) {
 function bindEvents() {
   bindCustomSelects();
   if (state.page === "mods") modsFeature.bind();
+  if (state.modal === "create" && state.createMode === "modpack") modpackPicker.bind();
   document.querySelectorAll("[data-context-action]").forEach((button) => button.addEventListener("click", handleContextAction));
   document.querySelectorAll("[data-close-modal]").forEach((button) => button.addEventListener("click", () => openModal(null)));
   document.querySelector("#instance-form")?.addEventListener("submit", saveInstance);
+  document.querySelector("#create-type-custom")?.addEventListener("click", () => {
+    if (state.createMode === "custom") return;
+    state.createMode = "custom";
+    render();
+  });
+  document.querySelector("#create-type-modpack")?.addEventListener("click", () => {
+    if (state.createMode === "modpack") return;
+    state.createMode = "modpack";
+    render();
+    modpackPicker.open();
+  });
   document.querySelector("#delete-instance")?.addEventListener("click", () => openModal("delete"));
   document.querySelector("#confirm-delete")?.addEventListener("click", deleteInstance);
   document.querySelector("#confirm-migration")?.addEventListener("click", confirmMigration);
@@ -873,6 +920,10 @@ function openModal(modal) {
   dismissContextMenu(false);
   state.accountMenu = false;
   if (modal !== "migration") state.pendingMigration = null;
+  if (modal === "create" && state.modal !== "create") {
+    state.createMode = "custom";
+    modpackPicker.reset();
+  }
   state.modal = modal;
   render();
 }

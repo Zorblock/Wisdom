@@ -2,6 +2,7 @@ use crate::instance_setup;
 use crate::instances::{self, Instance};
 use crate::minecraft::ProgressReporter;
 use crate::modloaders::ModLoader;
+use crate::modrinth_versions::{self, ReleaseChannel, VersionChoice};
 use crate::storage::http;
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
@@ -27,6 +28,8 @@ pub struct ModpackPlan {
     project_icon: Option<String>,
     version_id: String,
     version_number: String,
+    #[serde(default)]
+    version_type: ReleaseChannel,
     file: ApiFile,
 }
 
@@ -102,19 +105,52 @@ struct InstalledModpack {
     project_icon: Option<String>,
     version_id: String,
     version_number: String,
+    version_type: ReleaseChannel,
 }
 
-pub fn resolve(project_id: &str, preferred_game_version: &str) -> Result<ResolvedModpack> {
+pub fn resolve_choice(
+    project_id: &str,
+    preferred_game_version: &str,
+    requested: ReleaseChannel,
+) -> Result<VersionChoice> {
+    let resolved = resolve_channel(project_id, preferred_game_version, requested)?;
+    Ok(VersionChoice {
+        project_id: resolved.plan.project_id.clone(),
+        title: resolved.name,
+        version_id: resolved.plan.version_id,
+        version_number: resolved.plan.version_number,
+        version_type: resolved.plan.version_type,
+        requires_confirmation: resolved.plan.version_type != requested,
+    })
+}
+
+pub fn resolve_exact(
+    project_id: &str,
+    preferred_game_version: &str,
+    version_id: &str,
+) -> Result<ResolvedModpack> {
     validate_id(project_id)?;
+    validate_id(version_id)?;
+    validate_game_version(preferred_game_version)?;
     let client = http()?;
-    let project: ApiProject = client
-        .get(format!("{API_BASE}/project/{project_id}"))
+    let project = fetch_project(&client, project_id)?;
+    let version: ApiVersion = client
+        .get(format!("{API_BASE}/version/{version_id}"))
         .send()?
         .error_for_status()?
         .json()?;
-    if project.id != project_id || project.project_type != "modpack" {
-        bail!("The selected Modrinth project is not a modpack");
-    }
+    build_resolved(project, version, project_id, preferred_game_version)
+}
+
+fn resolve_channel(
+    project_id: &str,
+    preferred_game_version: &str,
+    requested: ReleaseChannel,
+) -> Result<ResolvedModpack> {
+    validate_id(project_id)?;
+    validate_game_version(preferred_game_version)?;
+    let client = http()?;
+    let project = fetch_project(&client, project_id)?;
     let versions: Vec<ApiVersion> = client
         .get(format!("{API_BASE}/project/{project_id}/version"))
         .query(&[
@@ -127,25 +163,59 @@ pub fn resolve(project_id: &str, preferred_game_version: &str) -> Result<Resolve
         .send()?
         .error_for_status()?
         .json()?;
-    let version = versions
-        .into_iter()
-        .find(|version| {
+    let (version, _, _) = modrinth_versions::choose(
+        &versions,
+        requested,
+        requested == ReleaseChannel::Release,
+        |version| version.version_type.as_str(),
+        |version| {
             version.project_id == project_id
-                && version.version_type == "release"
                 && version
                     .game_versions
                     .iter()
                     .any(|value| value == preferred_game_version)
                 && loader_from_names(&version.loaders).is_some()
                 && select_mrpack(version).is_some()
-        })
-        .with_context(|| {
-            format!("No stable modpack release is available for Minecraft {preferred_game_version}")
-        })?;
+        },
+    )
+    .with_context(|| unavailable_message(requested, preferred_game_version))?;
+    build_resolved(project, version.clone(), project_id, preferred_game_version)
+}
+
+fn fetch_project(client: &Client, project_id: &str) -> Result<ApiProject> {
+    let project: ApiProject = client
+        .get(format!("{API_BASE}/project/{project_id}"))
+        .send()?
+        .error_for_status()?
+        .json()?;
+    if project.id != project_id || project.project_type != "modpack" {
+        bail!("The selected Modrinth project is not a modpack");
+    }
+    Ok(project)
+}
+
+fn build_resolved(
+    project: ApiProject,
+    version: ApiVersion,
+    project_id: &str,
+    preferred_game_version: &str,
+) -> Result<ResolvedModpack> {
+    if version.project_id != project_id
+        || !version
+            .game_versions
+            .iter()
+            .any(|value| value == preferred_game_version)
+    {
+        bail!(
+            "The selected modpack version is not compatible with Minecraft {preferred_game_version}"
+        );
+    }
+    let version_type = ReleaseChannel::from_api(&version.version_type)
+        .context("The selected modpack uses an unknown release channel")?;
     let loader =
         loader_from_names(&version.loaders).context("The modpack loader is unsupported")?;
     let file = select_mrpack(&version)
-        .context("The stable Modrinth release has no .mrpack file")?
+        .context("The selected Modrinth version has no .mrpack file")?
         .clone();
     Ok(ResolvedModpack {
         name: project.title.clone(),
@@ -157,9 +227,24 @@ pub fn resolve(project_id: &str, preferred_game_version: &str) -> Result<Resolve
             project_icon: safe_icon_url(project.icon_url),
             version_id: version.id,
             version_number: version.version_number,
+            version_type,
             file,
         },
     })
+}
+
+fn unavailable_message(channel: ReleaseChannel, game_version: &str) -> String {
+    match channel {
+        ReleaseChannel::Release => format!(
+            "No compatible release, beta, or alpha modpack is available for Minecraft {game_version}"
+        ),
+        ReleaseChannel::Beta => {
+            format!("No compatible beta modpack is available for Minecraft {game_version}")
+        }
+        ReleaseChannel::Alpha => {
+            format!("No compatible alpha modpack is available for Minecraft {game_version}")
+        }
+    }
 }
 
 pub fn install(
@@ -210,6 +295,7 @@ pub fn install(
         project_icon: plan.project_icon,
         version_id: plan.version_id,
         version_number: plan.version_number,
+        version_type: plan.version_type,
     };
     fs::write(
         instances::game_dir(root, &configured)
@@ -649,6 +735,14 @@ fn validate_id(value: &str) -> Result<()> {
             .all(|character| character.is_ascii_alphanumeric())
     {
         bail!("Invalid Modrinth project ID");
+    }
+    Ok(())
+}
+
+fn validate_game_version(value: &str) -> Result<()> {
+    if value.is_empty() || value.len() > 64 || value.chars().any(|character| character.is_control())
+    {
+        bail!("Invalid Minecraft version");
     }
     Ok(())
 }

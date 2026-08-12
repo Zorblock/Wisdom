@@ -1,4 +1,5 @@
 use crate::instances::{self, Instance};
+use crate::modrinth_versions::{self, ReleaseChannel, VersionChoice};
 use crate::storage::http;
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
@@ -11,7 +12,6 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const API_BASE: &str = "https://api.modrinth.com/v2";
-const RELEASE_VERSION_TYPE: &str = "release";
 const MANIFEST_VERSION: u32 = 1;
 const MAX_MOD_SIZE: u64 = 1_073_741_824;
 
@@ -41,6 +41,7 @@ pub struct InstalledModView {
     pub project_id: String,
     pub title: String,
     pub version_number: String,
+    pub version_type: ReleaseChannel,
     pub icon_url: Option<String>,
     pub explicit: bool,
     pub enabled: bool,
@@ -91,6 +92,8 @@ struct InstalledMod {
     version_id: String,
     title: String,
     version_number: String,
+    #[serde(default)]
+    version_type: ReleaseChannel,
     file_name: String,
     sha1: String,
     sha512: String,
@@ -229,6 +232,7 @@ pub fn preview_migration(
             None,
             loader,
             target_version,
+            ReleaseChannel::Release,
             &mut candidate,
             &mut resolving,
         ) {
@@ -357,6 +361,7 @@ pub fn list_installed(
                 project_id: installed.project_id.clone(),
                 title: installed.title.clone(),
                 version_number: installed.version_number.clone(),
+                version_type: installed.version_type,
                 icon_url: safe_icon_url(installed.icon_url.clone()),
                 explicit: installed.explicit,
                 enabled: installed.enabled,
@@ -397,6 +402,7 @@ pub fn install(
     root: &Path,
     instance_id: &str,
     project_id: &str,
+    version_id: &str,
     report_progress: &(dyn Fn(f32) + Send + Sync),
 ) -> Result<Vec<InstalledModView>> {
     validate_project_id(project_id)?;
@@ -410,9 +416,10 @@ pub fn install(
     resolve_migration_project(
         &client,
         project_id,
-        None,
+        Some(version_id),
         loader,
         &instance.version,
+        ReleaseChannel::Release,
         &mut planned_versions,
         &mut planning,
     )?;
@@ -430,12 +437,13 @@ pub fn install(
         &instance,
         loader,
         project_id,
-        None,
+        Some(version_id),
         true,
         &mut manifest,
         &mut resolving,
         Some(&planned_versions),
         Some(&mut install_progress),
+        ReleaseChannel::Release,
     );
     if let Err(error) = result {
         garbage_collect(root, &instance, &mut manifest)?;
@@ -445,6 +453,40 @@ pub fn install(
     save_manifest(root, &instance, &manifest)?;
     report_progress(1.0);
     list_installed(root, instance_id, true)
+}
+
+pub fn resolve_choice(
+    root: &Path,
+    instance_id: &str,
+    project_id: &str,
+    requested: ReleaseChannel,
+) -> Result<VersionChoice> {
+    validate_project_id(project_id)?;
+    let instance = instances::load(root, instance_id)?;
+    let loader = require_loader(&instance)?;
+    let client = http()?;
+    let project = fetch_project(&client, project_id)?;
+    let versions = fetch_versions(&client, project_id, loader, &instance.version)?;
+    let (version, channel, requires_confirmation) = modrinth_versions::choose(
+        &versions,
+        requested,
+        requested == ReleaseChannel::Release,
+        |version| version.version_type.as_str(),
+        |version| {
+            version.project_id == project_id
+                && ensure_compatible(version, loader, &instance.version).is_ok()
+                && select_file(version).is_ok()
+        },
+    )
+    .with_context(|| unavailable_message(requested, loader, &instance.version))?;
+    Ok(VersionChoice {
+        project_id: project.id,
+        title: project.title,
+        version_id: version.id.clone(),
+        version_number: version.version_number.clone(),
+        version_type: channel,
+        requires_confirmation,
+    })
 }
 
 pub fn remove(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<InstalledModView>> {
@@ -498,7 +540,12 @@ pub fn set_enabled(
     list_installed(root, instance_id, false)
 }
 
-pub fn update(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<InstalledModView>> {
+pub fn update(
+    root: &Path,
+    instance_id: &str,
+    project_id: &str,
+    version_id: &str,
+) -> Result<Vec<InstalledModView>> {
     validate_project_id(project_id)?;
     let instance = instances::load(root, instance_id)?;
     let loader = require_loader(&instance)?;
@@ -510,7 +557,6 @@ pub fn update(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<In
         .find(|item| item.project_id == project_id)
         .context("Mod is not installed")?;
     let explicit = installed.explicit;
-    let exact_version = (!explicit).then(|| installed.version_id.clone());
     let mut resolving = HashSet::new();
     install_project(
         &client,
@@ -518,12 +564,13 @@ pub fn update(root: &Path, instance_id: &str, project_id: &str) -> Result<Vec<In
         &instance,
         loader,
         project_id,
-        exact_version.as_deref(),
+        Some(version_id),
         explicit,
         &mut manifest,
         &mut resolving,
         None,
         None,
+        ReleaseChannel::Release,
     )?;
     garbage_collect(root, &instance, &mut manifest)?;
     save_manifest(root, &instance, &manifest)?;
@@ -555,6 +602,7 @@ pub fn update_all(root: &Path, instance_id: &str) -> Result<Vec<InstalledModView
             &mut resolving,
             None,
             None,
+            ReleaseChannel::Release,
         )?;
     }
     garbage_collect(root, &instance, &mut manifest)?;
@@ -575,6 +623,7 @@ fn install_project(
     resolving: &mut HashSet<String>,
     planned_versions: Option<&HashMap<String, ApiVersion>>,
     mut install_progress: Option<&mut ModInstallProgress<'_>>,
+    allowed_channel: ReleaseChannel,
 ) -> Result<()> {
     validate_project_id(project_id)?;
     if !resolving.insert(project_id.to_owned()) {
@@ -583,14 +632,21 @@ fn install_project(
 
     let version = match planned_versions.and_then(|versions| versions.get(project_id)) {
         Some(version) => version.clone(),
-        None => {
-            fetch_release_version(client, project_id, exact_version, loader, &instance.version)?
-        }
+        None => fetch_version_for_channel(
+            client,
+            project_id,
+            exact_version,
+            loader,
+            &instance.version,
+            allowed_channel,
+        )?,
     };
     if version.project_id != project_id {
         bail!("Modrinth returned a version for the wrong project");
     }
     ensure_compatible(&version, loader, &instance.version)?;
+    let dependency_channel =
+        ReleaseChannel::from_api(&version.version_type).unwrap_or(allowed_channel);
     let project = fetch_project(client, project_id)?;
     let mut dependencies = Vec::new();
     for dependency in version
@@ -633,6 +689,7 @@ fn install_project(
             resolving,
             planned_versions,
             install_progress.as_deref_mut(),
+            dependency_channel,
         )?;
     }
 
@@ -673,6 +730,7 @@ fn install_project(
         version_id: version.id,
         title: project.title,
         version_number: version.version_number,
+        version_type: ReleaseChannel::from_api(&version.version_type).unwrap_or_default(),
         file_name: file_name.clone(),
         sha1,
         sha512,
@@ -717,6 +775,7 @@ fn resolve_migration_project(
     exact_version: Option<&str>,
     loader: &str,
     game_version: &str,
+    allowed_channel: ReleaseChannel,
     resolved: &mut HashMap<String, ApiVersion>,
     resolving: &mut HashSet<String>,
 ) -> Result<()> {
@@ -730,11 +789,20 @@ fn resolve_migration_project(
     if !resolving.insert(project_id.to_owned()) {
         return Ok(());
     }
-    let version = fetch_release_version(client, project_id, exact_version, loader, game_version)?;
+    let version = fetch_version_for_channel(
+        client,
+        project_id,
+        exact_version,
+        loader,
+        game_version,
+        allowed_channel,
+    )?;
     if version.project_id != project_id {
         bail!("Modrinth returned a version for the wrong project");
     }
     ensure_compatible(&version, loader, game_version)?;
+    let dependency_channel =
+        ReleaseChannel::from_api(&version.version_type).unwrap_or(allowed_channel);
     select_file(&version)?;
     for dependency in version
         .dependencies
@@ -767,6 +835,7 @@ fn resolve_migration_project(
             dependency_version.as_deref(),
             loader,
             game_version,
+            dependency_channel,
             resolved,
             resolving,
         )?;
@@ -785,23 +854,22 @@ fn fetch_version(client: &Client, version_id: &str) -> Result<ApiVersion> {
         .json()?)
 }
 
-fn fetch_release_version(
+fn fetch_version_for_channel(
     client: &Client,
     project_id: &str,
     exact_version: Option<&str>,
     loader: &str,
     game_version: &str,
+    allowed_channel: ReleaseChannel,
 ) -> Result<ApiVersion> {
     if let Some(version_id) = exact_version {
         let version = fetch_version(client, version_id)?;
         if version.project_id != project_id {
             bail!("Modrinth returned a version for the wrong project");
         }
-        if version.version_type == RELEASE_VERSION_TYPE {
-            return Ok(version);
-        }
+        return Ok(version);
     }
-    fetch_latest_version(client, project_id, loader, game_version)
+    fetch_latest_version(client, project_id, loader, game_version, allowed_channel)
 }
 
 fn fetch_latest_version(
@@ -809,25 +877,62 @@ fn fetch_latest_version(
     project_id: &str,
     loader: &str,
     game_version: &str,
+    allowed_channel: ReleaseChannel,
 ) -> Result<ApiVersion> {
-    let loaders = serde_json::to_string(&[loader])?;
-    let game_versions = serde_json::to_string(&[game_version])?;
-    let versions: Vec<ApiVersion> = client
+    let versions = fetch_versions(client, project_id, loader, game_version)?;
+    let channels = match allowed_channel {
+        ReleaseChannel::Release => &[ReleaseChannel::Release][..],
+        ReleaseChannel::Beta => &[ReleaseChannel::Release, ReleaseChannel::Beta][..],
+        ReleaseChannel::Alpha => &[
+            ReleaseChannel::Release,
+            ReleaseChannel::Beta,
+            ReleaseChannel::Alpha,
+        ][..],
+    };
+    channels
+        .iter()
+        .find_map(|channel| {
+            versions.iter().find(|version| {
+                version.project_id == project_id
+                    && version.version_type == channel.as_str()
+                    && ensure_compatible(version, loader, game_version).is_ok()
+                    && select_file(version).is_ok()
+            })
+        })
+        .cloned()
+        .with_context(|| unavailable_message(allowed_channel, loader, game_version))
+}
+
+fn fetch_versions(
+    client: &Client,
+    project_id: &str,
+    loader: &str,
+    game_version: &str,
+) -> Result<Vec<ApiVersion>> {
+    Ok(client
         .get(format!("{API_BASE}/project/{project_id}/version"))
         .query(&[
-            ("loaders", loaders),
-            ("game_versions", game_versions),
+            ("loaders", serde_json::to_string(&[loader])?),
+            ("game_versions", serde_json::to_string(&[game_version])?),
             ("include_changelog", "false".to_owned()),
         ])
         .send()?
         .error_for_status()?
-        .json()?;
-    versions
-        .into_iter()
-        .find(|version| version.version_type == RELEASE_VERSION_TYPE)
-        .with_context(|| {
-            format!("No stable {loader} release is available for Minecraft {game_version}")
-        })
+        .json()?)
+}
+
+fn unavailable_message(channel: ReleaseChannel, loader: &str, game_version: &str) -> String {
+    match channel {
+        ReleaseChannel::Release => format!(
+            "No compatible release, beta, or alpha is available for {loader} on Minecraft {game_version}"
+        ),
+        ReleaseChannel::Beta => {
+            format!("No compatible beta is available for {loader} on Minecraft {game_version}")
+        }
+        ReleaseChannel::Alpha => {
+            format!("No compatible alpha is available for {loader} on Minecraft {game_version}")
+        }
+    }
 }
 
 fn fetch_updates(
@@ -839,6 +944,7 @@ fn fetch_updates(
         .mods
         .iter()
         .filter(|item| item.explicit && !item.sha512.is_empty())
+        .filter(|item| item.version_type == ReleaseChannel::Release)
         .map(|item| item.sha512.as_str())
         .collect::<Vec<_>>();
     if hashes.is_empty() {
@@ -861,10 +967,17 @@ fn fetch_updates(
         let Some(candidate) = response.get(&item.sha512).and_then(Option::as_ref) else {
             continue;
         };
-        let release = if candidate.version_type == RELEASE_VERSION_TYPE {
+        let release = if candidate.version_type == ReleaseChannel::Release.as_str() {
             Some(candidate.clone())
         } else {
-            fetch_latest_version(&client, &item.project_id, loader, game_version).ok()
+            fetch_latest_version(
+                &client,
+                &item.project_id,
+                loader,
+                game_version,
+                ReleaseChannel::Release,
+            )
+            .ok()
         };
         if let Some(release) = release {
             updates.insert(item.sha512.clone(), release);
@@ -874,9 +987,6 @@ fn fetch_updates(
 }
 
 fn ensure_compatible(version: &ApiVersion, loader: &str, game_version: &str) -> Result<()> {
-    if version.version_type != RELEASE_VERSION_TYPE {
-        bail!("Only stable Modrinth releases can be installed");
-    }
     if !version.loaders.iter().any(|value| value == loader)
         || !version
             .game_versions
