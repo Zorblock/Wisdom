@@ -4,10 +4,12 @@ import { AnsiUp } from "ansi_up";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { createModsFeature } from "./mods.js";
+import { initLogsView } from "./logs.js";
 
 const app = document.querySelector("#app");
 const viewParams = new URLSearchParams(window.location.search);
 const isConsoleView = viewParams.get("console") === "1";
+const isLogsView = viewParams.get("logs") === "1";
 const customSelectOptionSets = new Map();
 let cachedVersionOptions = null;
 const SELECT_ROW_HEIGHT = 34;
@@ -30,6 +32,7 @@ const state = {
   busy: null,
   status: "Loading launcher...",
   progress: 0,
+  transferRate: "",
   toast: null,
 };
 
@@ -99,6 +102,7 @@ const icons = {
   paste: "fa-solid fa-paste",
   select: "fa-solid fa-i-cursor",
   terminal: "fa-solid fa-terminal",
+  logs: "fa-solid fa-file-lines",
   mods: "fa-solid fa-puzzle-piece",
   refresh: "fa-solid fa-rotate",
   download: "fa-solid fa-download",
@@ -542,7 +546,7 @@ function shell(content) {
       <main class="workspace">
         ${content}
         <div class="statusbar ${state.busy ? "busy" : ""}">
-          <span class="status-dot"></span><span id="activity-text">${escapeHtml(state.status)}</span>
+          <span class="status-dot"></span><span id="activity-text">${escapeHtml(state.status)}</span><span id="activity-metrics" class="activity-metrics">${state.busy?.startsWith("launch:") ? `${Math.round(state.progress * 100)}%${state.transferRate ? ` · ${escapeHtml(state.transferRate)}` : ""}` : ""}</span>
           <div class="status-progress"><span id="progress-fill" style="width:${Math.round(state.progress * 100)}%"></span></div>
         </div>
       </main>
@@ -585,7 +589,7 @@ function renderLibrary() {
         <div class="launch-controls">
           ${instance.loader === "vanilla" ? `<div class="version-field"><span>Version</span>${customSelect("launch-version", selectedVersion, versionOptions(selectedVersion), "Minecraft version")}</div>` : `<div class="version-field fixed-version"><span>${escapeHtml(loaderLabel(instance.loader))}</span><strong>${escapeHtml(instance.version)}</strong></div>`}
           <button id="primary-action" class="button play-button ${running ? "running" : ""}" ${state.busy || running ? "disabled" : ""}>
-            ${launching ? `<span class="spinner"></span><span><strong>Starting</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : running ? `${icon("check")}<span><strong>Running</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : account ? `${icon("play")}<span><strong>Play</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : `${icon("spark")}<span><strong>Minecraft account required</strong><small>Sign in to play</small></span>`}
+            ${launching ? `<span class="spinner"></span><span><strong>Starting</strong><small id="play-progress-label">${Math.round(state.progress * 100)}%${state.transferRate ? ` · ${escapeHtml(state.transferRate)}` : ""}</small></span>` : running ? `${icon("check")}<span><strong>Running</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : account ? `${icon("play")}<span><strong>Play</strong><small id="play-version-label">${escapeHtml(selectedVersion)}</small></span>` : `${icon("spark")}<span><strong>Minecraft account required</strong><small>Sign in to play</small></span>`}
           </button>
         </div>
       </section>
@@ -597,6 +601,7 @@ function renderLibrary() {
           <button id="edit-instance" type="button" class="instance-tool" data-open-modal="edit">${icon("settings")}<span><strong>Settings</strong></span>${icon("chevron")}</button>
           <button id="open-instance" class="instance-tool">${icon("folder")}<span><strong>Folder</strong></span>${icon("chevron")}</button>
           ${running && state.data.settings.openConsole ? `<button id="open-console" class="instance-tool">${icon("terminal")}<span><strong>Console</strong></span>${icon("chevron")}</button>` : ""}
+          <button id="open-logs" class="instance-tool">${icon("logs")}<span><strong>Logs</strong></span>${icon("chevron")}</button>
         </div>
       </section>
     </div>`;
@@ -617,6 +622,7 @@ function renderContextMenu() {
         <button class="context-action" role="menuitem" data-context-action="edit">${icon("edit")}<span>Edit</span></button>
         ${instance.loader !== "vanilla" ? `<button class="context-action" role="menuitem" data-context-action="mods">${icon("mods")}<span>Manage mods</span></button>` : ""}
         <button class="context-action" role="menuitem" data-context-action="folder">${icon("folder")}<span>Open folder</span></button>
+        <button class="context-action" role="menuitem" data-context-action="logs">${icon("logs")}<span>View logs</span></button>
         ${running && state.data.settings.openConsole ? `<button class="context-action" role="menuitem" data-context-action="console">${icon("terminal")}<span>Open console</span></button>` : ""}
         <div class="context-separator"></div>
         <button class="context-action danger-action" role="menuitem" data-context-action="delete" ${running ? "disabled" : ""} title="${running ? "A running instance cannot be deleted" : "Delete instance permanently"}">${icon("trash")}<span>${running ? "Currently running" : "Delete instance"}</span></button>
@@ -786,6 +792,7 @@ function bindEvents() {
   });
   document.querySelector("#open-instance")?.addEventListener("click", () => callSimple("open_instance_folder", { instanceId: activeInstance().id }, "Instance folder opened."));
   document.querySelector("#open-console")?.addEventListener("click", () => invoke("open_instance_console", { instanceId: activeInstance().id }).catch((error) => fail("Could not open console", error)));
+  document.querySelector("#open-logs")?.addEventListener("click", () => invoke("open_instance_logs", { instanceId: activeInstance().id }).catch((error) => fail("Could not open logs", error)));
   document.querySelector("#manage-mods")?.addEventListener("click", openMods);
   document.querySelector("#open-data")?.addEventListener("click", () => callSimple("open_data_folder", {}, "Data folder opened."));
   document.querySelector("#signin")?.addEventListener("click", login);
@@ -989,6 +996,9 @@ async function handleContextAction(event) {
   } else if (action === "console") {
     render();
     invoke("open_instance_console", { instanceId: instance.id }).catch((error) => fail("Could not open console", error));
+  } else if (action === "logs") {
+    render();
+    invoke("open_instance_logs", { instanceId: instance.id }).catch((error) => fail("Could not open logs", error));
   } else if (action === "play") {
     state.page = "library";
     render();
@@ -1219,6 +1229,7 @@ async function launch() {
   state.busy = `launch:${instance.id}`;
   state.data.runningInstances.push(instance.id);
   state.progress = 0;
+  state.transferRate = "";
   state.status = `Preparing Minecraft ${version}...`;
   render();
   try {
@@ -1227,6 +1238,7 @@ async function launch() {
     state.data.instances[index] = updated;
     state.selectedVersion = updated.version;
     state.progress = 1;
+    state.transferRate = "";
     state.status = `${updated.name} is running.`;
     notify("Minecraft is running.", "success");
     if (launchBehavior !== "keepOpen") {
@@ -1239,6 +1251,7 @@ async function launch() {
   } catch (error) {
     state.data.runningInstances = state.data.runningInstances.filter((id) => id !== instance.id);
     state.progress = 0;
+    state.transferRate = "";
     fail("Minecraft could not be started", error);
   } finally {
     state.busy = null;
@@ -1282,8 +1295,13 @@ function notify(message, type = "error") {
 function updateStatusDom() {
   const text = document.querySelector("#activity-text");
   const progress = document.querySelector("#progress-fill");
+  const metrics = document.querySelector("#activity-metrics");
+  const playProgress = document.querySelector("#play-progress-label");
   if (text) text.textContent = state.status;
   if (progress) progress.style.width = `${Math.round(state.progress * 100)}%`;
+  const summary = `${Math.round(state.progress * 100)}%${state.transferRate ? ` · ${state.transferRate}` : ""}`;
+  if (metrics) metrics.textContent = state.busy?.startsWith("launch:") ? summary : "";
+  if (playProgress) playProgress.textContent = summary;
 }
 
 function cleanConsoleMessage(value) {
@@ -1411,7 +1429,7 @@ async function initConsole() {
     }
     refreshCount();
     applyFilter();
-    if (autoScroll) output.scrollTop = output.scrollHeight;
+    if (autoScroll) requestAnimationFrame(() => { output.scrollTop = output.scrollHeight; });
   };
   const clearConsole = () => {
     renderedLines.length = 0;
@@ -1505,7 +1523,10 @@ async function init() {
   render();
   try {
     await listen("status", (event) => {
-      state.status = String(event.payload);
+      const message = String(event.payload);
+      const transfer = /\s*·\s*(\d+)%\s*·\s*([\d.]+\s*(?:MB|KB|B)\/s)\b/i.exec(message);
+      state.status = transfer ? message.replace(transfer[0], "") : message;
+      state.transferRate = transfer?.[2] || "";
       updateStatusDom();
     });
     await listen("progress", (event) => {
@@ -1565,4 +1586,5 @@ window.addEventListener("focus", async () => {
 });
 
 if (isConsoleView) initConsole();
+else if (isLogsView) initLogsView({ app, invoke, applyAccent, icon, escapeHtml, cleanError, writeClipboard, params: viewParams });
 else init();

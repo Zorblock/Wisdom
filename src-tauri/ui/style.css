@@ -517,6 +517,7 @@ button, input[type="range"], input[type="checkbox"] { cursor: pointer; }
 }
 .status-dot { width: 5px; height: 5px; border-radius: 50%; background: #555; }
 .statusbar.busy .status-dot { background: var(--accent); }
+.activity-metrics { flex: 0 0 auto; margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
 .status-progress { position: absolute; inset: auto 0 0; height: 1px; overflow: hidden; }
 .status-progress span { display: block; height: 100%; background: var(--accent); transition: width .15s linear; }
 

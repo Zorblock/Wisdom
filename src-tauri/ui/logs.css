@@ -1,0 +1,25 @@
+.logs-shell { grid-template-rows: 64px minmax(0, 1fr) 28px; }
+.logs-file-picker { position: relative; min-width: 0; margin-left: 10px; }
+.logs-file-trigger { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 210px; height: 32px; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; color: var(--text); background: #050505; font-size: 9px; }
+.logs-file-trigger:hover, .logs-file-trigger[aria-expanded="true"] { border-color: var(--line-strong); background: #090909; }
+.logs-file-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-file-trigger .icon { width: 9px; color: var(--muted-2); }
+.logs-file-menu { position: absolute; z-index: 20; top: 37px; left: 0; width: 290px; max-height: 330px; padding: 5px; overflow: auto; visibility: hidden; border: 1px solid var(--line-strong); border-radius: 6px; opacity: 0; background: #050505; box-shadow: 0 16px 40px #000; transform: translateY(-4px); transition: opacity .1s ease, transform .1s ease, visibility .1s; }
+.logs-file-menu.open { visibility: visible; opacity: 1; transform: translateY(0); }
+.logs-file-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 45px; padding: 7px 9px; border: 0; border-radius: 4px; color: var(--muted); text-align: left; background: transparent; }
+.logs-file-option:hover { color: var(--text); background: #101010; }
+.logs-file-option.active { color: var(--text); background: rgba(var(--accent-rgb), .12); }
+.logs-file-option > span { min-width: 0; }
+.logs-file-option strong, .logs-file-option small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-file-option strong { font-size: 9px; font-weight: 600; }
+.logs-file-option small { margin-top: 3px; color: var(--muted-2); font-size: 7px; }
+.logs-file-option > small { flex: 0 0 auto; margin: 0; }
+.logs-no-files, .logs-loading { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 90px; color: var(--muted-2); font-size: 9px; }
+.logs-loading { height: 100%; }
+.logs-loading.error { color: var(--danger); }
+
+@media (max-width: 760px) {
+  .logs-file-picker { margin-left: auto; }
+  .logs-file-trigger { width: 150px; }
+  .logs-shell .console-heading { display: none; }
+}

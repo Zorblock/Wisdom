@@ -5545,6 +5545,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "ctrlc",
+ "flate2",
  "keyring",
  "mc-launcher-core",
  "open",

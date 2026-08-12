@@ -2,9 +2,12 @@
 
 mod auth;
 mod content_commands;
+mod downloads;
+mod instance_logs;
 mod instance_migration;
 mod instances;
 mod minecraft;
+mod minecraft_install;
 mod modloaders;
 mod modrinth;
 mod runtime;
@@ -23,6 +26,7 @@ const MICROSOFT_CLIENT_ID: &str = "6f216a95-c659-4c83-818b-a4d2c0a6e73f";
 pub(crate) struct RuntimeState {
     signing_in: AtomicBool,
     pub(crate) running_instances: Arc<Mutex<HashSet<String>>>,
+    pub(crate) content_operations: Arc<Mutex<()>>,
     console_logs: Arc<Mutex<HashMap<String, VecDeque<ConsoleLine>>>>,
     main_window_hidden: Arc<AtomicBool>,
 }
@@ -369,6 +373,40 @@ async fn open_instance_console(app: AppHandle, instance_id: String) -> Result<()
     })
     .await?;
     open_console_window(&app, &instance, false).map(|_| ())
+}
+
+#[tauri::command]
+async fn open_instance_logs(app: AppHandle, instance_id: String) -> Result<(), String> {
+    let lookup_id = instance_id.clone();
+    let instance = run_blocking(move || {
+        let root = storage::user_data_dir()?;
+        instances::load(&root, &lookup_id)
+    })
+    .await?;
+    instance_logs::open_window(&app, &instance)
+}
+
+#[tauri::command]
+async fn list_instance_logs(
+    instance_id: String,
+) -> Result<Vec<instance_logs::InstanceLogFile>, String> {
+    run_blocking(move || {
+        let root = storage::user_data_dir()?;
+        instance_logs::list(&root, &instance_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn read_instance_log(
+    instance_id: String,
+    file_name: String,
+) -> Result<Vec<instance_logs::InstanceLogLine>, String> {
+    run_blocking(move || {
+        let root = storage::user_data_dir()?;
+        instance_logs::read(&root, &instance_id, &file_name)
+    })
+    .await
 }
 
 fn console_window_label(instance_id: &str) -> String {
@@ -799,6 +837,9 @@ pub fn run() {
             get_system_accent,
             get_console_history,
             open_instance_console,
+            open_instance_logs,
+            list_instance_logs,
+            read_instance_log,
             content_commands::list_instance_mods,
             content_commands::search_modrinth,
             content_commands::install_modrinth_mod,

@@ -30,6 +30,9 @@
 .enabled-first { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; color: var(--muted); font-size: 8px; }
 
 .managed-mod-list, .modrinth-results { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: #020202; }
+.modrinth-results { transition: opacity .12s ease; }
+.modrinth-results.has-results { min-height: 1920px; }
+.modrinth-results.is-loading { opacity: .58; pointer-events: none; }
 .managed-mod, .modrinth-result { display: flex; align-items: center; gap: 12px; min-height: 66px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .managed-mod:last-child, .modrinth-result:last-child { border-bottom: 0; }
 .managed-mod.attention { background: #080604; }
@@ -50,14 +53,16 @@
 .mod-tag.warning { border-color: #584125; color: #d7a865; background: #100b05; }
 .mod-tag.action-tag { display: inline-flex; align-items: center; gap: 4px; border-color: rgba(var(--accent-rgb), .38); color: var(--accent); background: rgba(var(--accent-rgb), .09); }
 .mod-tag.action-tag .spinner { width: 9px; height: 9px; margin: 0; border-width: 1px; }
+.mod-actions { min-width: 100px; justify-content: flex-end; }
 .mod-actions .icon-button { width: 30px; height: 30px; }
+.mod-actions .spinner { width: 13px; height: 13px; margin: 0; }
 .mod-action-spinner { display: grid; place-items: center; width: 30px; height: 30px; color: var(--accent); }
 .mod-action-spinner .spinner { width: 14px; height: 14px; margin: 0; }
 .danger-icon { color: var(--danger); }
 
 .modrinth-result { min-height: 80px; }
-.modrinth-result .button { min-width: 88px; }
-.modrinth-result .action-button:disabled { min-width: 112px; opacity: .86; }
+.modrinth-result .button { width: 112px; min-width: 112px; }
+.modrinth-result .action-button:disabled { opacity: .86; }
 .result-categories { display: flex !important; gap: 4px; margin-top: 5px !important; }
 .result-categories > span { padding: 2px 5px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted-2); text-transform: capitalize; }
 .mods-placeholder, .mods-empty { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 82px; color: var(--muted-2); font-size: 9px; }

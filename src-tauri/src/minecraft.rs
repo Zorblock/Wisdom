@@ -1,3 +1,4 @@
+use crate::downloads::{Checksum, DownloadJob, download_jobs};
 use crate::storage::{AuthState, http, read_json};
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
@@ -5,19 +6,16 @@ use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Read;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
-use std::thread;
 use std::time::{Duration, SystemTime};
 
 const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const LAUNCHER_NAME: &str = "Wisdom";
-pub type ProgressReporter = dyn Fn(f32, String) + Send + Sync;
+pub type ProgressReporter<'a> = dyn Fn(f32, String) + Send + Sync + 'a;
 
 #[derive(Clone, Debug)]
 pub struct LaunchOptions {
@@ -165,9 +163,7 @@ pub fn refresh_versions(root: &Path) -> Result<(VersionManifest, Vec<ManifestVer
         .ok()
         .and_then(|modified| SystemTime::now().duration_since(modified).ok())
         .is_some_and(|age| age < Duration::from_secs(10 * 60));
-    if cache_is_fresh
-        && let Ok(manifest) = read_json::<VersionManifest>(&cache)
-    {
+    if cache_is_fresh && let Ok(manifest) = read_json::<VersionManifest>(&cache) {
         return Ok((manifest.clone(), visible_versions(&manifest)));
     }
     let manifest = download_version_manifest(&cache)?;
@@ -204,28 +200,30 @@ pub fn install_and_launch(
     auth: &AuthState,
     options: &LaunchOptions,
     report: &(dyn Fn(String) + Send + Sync),
-    progress: &ProgressReporter,
+    progress: &ProgressReporter<'_>,
 ) -> Result<Child> {
     let client = http()?;
     report(format!("Preparing Minecraft {}...", entry.id));
     let meta: VersionMeta = client.get(&entry.url).send()?.error_for_status()?.json()?;
+    let java_progress = |value: f32, message: String| progress(value * 0.12, message);
     let java = crate::runtime::ensure_java(
         root,
         meta.java_version
             .as_ref()
             .map(|version| version.major_version)
             .unwrap_or(8),
-        progress,
+        &java_progress,
     )?;
     let version_dir = root.join("versions").join(&meta.id);
     fs::create_dir_all(&version_dir)?;
     let client_jar = version_dir.join(format!("{}.jar", meta.id));
+    let client_progress = |value: f32, message: String| progress(0.12 + value * 0.13, message);
     download_file(
         &client,
         &meta.downloads.client,
         &client_jar,
         "Minecraft client",
-        progress,
+        &client_progress,
     )?;
 
     report("Checking libraries and Windows components...".into());
@@ -262,12 +260,19 @@ pub fn install_and_launch(
             }
         }
     }
-    download_batch(&client, libraries, "Libraries", progress)?;
+    let library_progress = |value: f32, message: String| progress(0.25 + value * 0.27, message);
+    download_batch(&client, libraries, "libraries", &library_progress)?;
     let native_downloads = native_archives
         .iter()
         .map(|(download, path, _)| (download.clone(), path.clone()))
         .collect();
-    download_batch(&client, native_downloads, "Windows components", progress)?;
+    let native_progress = |value: f32, message: String| progress(0.52 + value * 0.10, message);
+    download_batch(
+        &client,
+        native_downloads,
+        "Windows components",
+        &native_progress,
+    )?;
     for (_, archive, extract) in native_archives {
         extract_native(&archive, &natives_dir, extract.as_ref())?;
     }
@@ -291,7 +296,14 @@ pub fn install_and_launch(
         let index_path = assets_root
             .join("indexes")
             .join(format!("{index_name}.json"));
-        download_file(&client, asset_index, &index_path, "Asset index", progress)?;
+        let index_progress = |value: f32, message: String| progress(0.62 + value * 0.03, message);
+        download_file(
+            &client,
+            asset_index,
+            &index_path,
+            "asset index",
+            &index_progress,
+        )?;
         let index: AssetIndex = read_json(&index_path)?;
         let mut seen_hashes = HashSet::new();
         let mut missing_assets = Vec::new();
@@ -319,7 +331,8 @@ pub fn install_and_launch(
                 ));
             }
         }
-        download_batch(&client, missing_assets, "Game assets", progress)?;
+        let asset_progress = |value: f32, message: String| progress(0.65 + value * 0.32, message);
+        download_batch(&client, missing_assets, "game assets", &asset_progress)?;
 
         let resources_dir = game_dir.join("resources");
         let virtual_dir = assets_root.join("virtual").join(&index_name);
@@ -385,12 +398,13 @@ pub fn install_and_launch(
             .as_deref()
             .unwrap_or("client-log-config.xml");
         let log_path = assets_root.join("log_configs").join(file_name);
+        let logging_progress = |value: f32, message: String| progress(0.97 + value * 0.02, message);
         download_file(
             &client,
             &logging.file,
             &log_path,
-            "Log configuration",
-            progress,
+            "log configuration",
+            &logging_progress,
         )?;
         jvm_args.push(
             logging
@@ -450,131 +464,35 @@ fn download_file(
     source: &Download,
     destination: &Path,
     label: &str,
-    progress: &ProgressReporter,
+    progress: &ProgressReporter<'_>,
 ) -> Result<()> {
-    download_to_disk(client, source, destination, |received, total| {
-        let amount = if total == 0 {
-            0.0
-        } else {
-            received as f32 / total as f32
-        };
-        progress(
-            amount,
-            format!("Downloading {label} · {}%", (amount * 100.0) as u32),
-        );
-    })
-}
-
-fn download_to_disk(
-    client: &Client,
-    source: &Download,
-    destination: &Path,
-    mut on_progress: impl FnMut(u64, u64),
-) -> Result<()> {
-    if destination.exists()
-        && source.sha1.as_ref().is_none_or(|hash| {
-            sha1_file(destination).is_ok_and(|actual| actual.eq_ignore_ascii_case(hash))
-        })
-    {
-        return Ok(());
-    }
-    fs::create_dir_all(
-        destination
-            .parent()
-            .context("Download target has no parent directory")?,
-    )?;
-    let mut response = client.get(&source.url).send()?.error_for_status()?;
-    let total = response.content_length().unwrap_or(0);
-    let temporary = destination.with_extension("download");
-    let mut output = File::create(&temporary)?;
-    let mut hasher = Sha1::new();
-    let mut received = 0u64;
-    let mut buffer = [0u8; 131_072];
-    loop {
-        let count = response.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        output.write_all(&buffer[..count])?;
-        hasher.update(&buffer[..count]);
-        received += count as u64;
-        on_progress(received, total);
-    }
-    if let Some(expected) = &source.sha1 {
-        let actual = format!("{:x}", hasher.finalize());
-        if !actual.eq_ignore_ascii_case(expected) {
-            fs::remove_file(&temporary)?;
-            bail!("Checksum does not match: {}", source.url);
-        }
-    }
-    replace_file(&temporary, destination)?;
-    Ok(())
+    download_jobs(
+        client,
+        vec![download_job(source, destination)],
+        label,
+        progress,
+    )
 }
 
 fn download_batch(
     client: &Client,
     tasks: Vec<(Download, PathBuf)>,
     category: &str,
-    progress: &ProgressReporter,
+    progress: &ProgressReporter<'_>,
 ) -> Result<()> {
-    if tasks.is_empty() {
-        progress(1.0, format!("{category} are ready."));
-        return Ok(());
+    let jobs = tasks
+        .into_iter()
+        .map(|(source, destination)| download_job(&source, &destination))
+        .collect();
+    download_jobs(client, jobs, category, progress)
+}
+
+fn download_job(source: &Download, destination: &Path) -> DownloadJob {
+    DownloadJob {
+        url: source.url.clone(),
+        destination: destination.to_path_buf(),
+        checksum: source.sha1.clone().map(Checksum::Sha1),
     }
-
-    let total = tasks.len();
-    progress(0.0, format!("Downloading {category} · 0/{total}"));
-    let (sender, receiver) = mpsc::channel();
-    for task in tasks {
-        sender.send(task).expect("download queue should be open");
-    }
-    drop(sender);
-
-    let queue = Arc::new(Mutex::new(receiver));
-    let completed = Arc::new(AtomicUsize::new(0));
-    let failure = Arc::new(Mutex::new(None::<String>));
-
-    thread::scope(|scope| {
-        for _ in 0..total.min(8) {
-            let client = client.clone();
-            let queue = Arc::clone(&queue);
-            let completed = Arc::clone(&completed);
-            let failure = Arc::clone(&failure);
-            scope.spawn(move || {
-                loop {
-                    if failure
-                        .lock()
-                        .ok()
-                        .and_then(|error| error.clone())
-                        .is_some()
-                    {
-                        break;
-                    }
-                    let task = queue.lock().ok().and_then(|queue| queue.recv().ok());
-                    let Some((source, destination)) = task else {
-                        break;
-                    };
-                    if let Err(error) = download_to_disk(&client, &source, &destination, |_, _| {})
-                    {
-                        if let Ok(mut stored) = failure.lock() {
-                            *stored = Some(format!("Download failed ({}): {error:#}", source.url));
-                        }
-                        break;
-                    }
-                    let count = completed.fetch_add(1, Ordering::Relaxed) + 1;
-                    progress(
-                        count as f32 / total as f32,
-                        format!("Downloading {category} · {count}/{total}"),
-                    );
-                }
-            });
-        }
-    });
-
-    if let Some(error) = failure.lock().ok().and_then(|error| error.clone()) {
-        bail!(error);
-    }
-    Ok(())
 }
 
 fn sha1_file(path: &Path) -> Result<String> {

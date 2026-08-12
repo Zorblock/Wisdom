@@ -1,6 +1,7 @@
 use crate::RuntimeState;
 use crate::modrinth::{self, InstalledModView, SearchResults};
 use crate::storage;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command]
@@ -46,7 +47,11 @@ pub async fn set_modrinth_mod_enabled(
     enabled: bool,
 ) -> Result<Vec<InstalledModView>, String> {
     ensure_stopped(&state, &instance_id)?;
+    let operation_lock = Arc::clone(&state.content_operations);
     let result = run_blocking(move || {
+        let _guard = operation_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Could not lock mod operations"))?;
         let root = storage::user_data_dir()?;
         modrinth::set_enabled(&root, &instance_id, &project_id, enabled)
     })
@@ -72,8 +77,12 @@ pub async fn install_modrinth_mod(
     project_id: String,
 ) -> Result<Vec<InstalledModView>, String> {
     ensure_stopped(&state, &instance_id)?;
+    let operation_lock = Arc::clone(&state.content_operations);
     let _ = app.emit("status", "Installing mod and required dependencies...");
     let result = run_blocking(move || {
+        let _guard = operation_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Could not lock mod operations"))?;
         let root = storage::user_data_dir()?;
         modrinth::install(&root, &instance_id, &project_id)
     })
@@ -92,7 +101,11 @@ pub async fn remove_modrinth_mod(
     project_id: String,
 ) -> Result<Vec<InstalledModView>, String> {
     ensure_stopped(&state, &instance_id)?;
+    let operation_lock = Arc::clone(&state.content_operations);
     let result = run_blocking(move || {
+        let _guard = operation_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Could not lock mod operations"))?;
         let root = storage::user_data_dir()?;
         modrinth::remove(&root, &instance_id, &project_id)
     })
@@ -111,8 +124,12 @@ pub async fn update_modrinth_mod(
     project_id: String,
 ) -> Result<Vec<InstalledModView>, String> {
     ensure_stopped(&state, &instance_id)?;
+    let operation_lock = Arc::clone(&state.content_operations);
     let _ = app.emit("status", "Updating mod and dependencies...");
     let result = run_blocking(move || {
+        let _guard = operation_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Could not lock mod operations"))?;
         let root = storage::user_data_dir()?;
         modrinth::update(&root, &instance_id, &project_id)
     })
@@ -130,8 +147,12 @@ pub async fn update_all_modrinth_mods(
     instance_id: String,
 ) -> Result<Vec<InstalledModView>, String> {
     ensure_stopped(&state, &instance_id)?;
+    let operation_lock = Arc::clone(&state.content_operations);
     let _ = app.emit("status", "Updating compatible mods...");
     let result = run_blocking(move || {
+        let _guard = operation_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("Could not lock mod operations"))?;
         let root = storage::user_data_dir()?;
         modrinth::update_all(&root, &instance_id)
     })

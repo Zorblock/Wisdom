@@ -21,7 +21,7 @@ struct AdoptiumPackage {
     checksum: String,
 }
 
-pub fn ensure_java(root: &Path, major: u32, progress: &ProgressReporter) -> Result<PathBuf> {
+pub fn ensure_java(root: &Path, major: u32, progress: &ProgressReporter<'_>) -> Result<PathBuf> {
     let java_root = root.join("java");
     let target = java_root.join(major.to_string());
     if let Some(java) = find_java(&target) {
@@ -71,7 +71,7 @@ pub fn ensure_java(root: &Path, major: u32, progress: &ProgressReporter) -> Resu
 fn download_archive(
     package: &AdoptiumPackage,
     destination: &Path,
-    progress: &ProgressReporter,
+    progress: &ProgressReporter<'_>,
 ) -> Result<()> {
     let mut response = http()?.get(&package.link).send()?.error_for_status()?;
     let total = response.content_length().unwrap_or(0);

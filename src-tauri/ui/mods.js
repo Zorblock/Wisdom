@@ -17,7 +17,9 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     totalHits: 0,
     loadingMods: false,
     searching: false,
-    action: null,
+    actions: new Map(),
+    actionQueue: [],
+    activeActions: 0,
     error: null,
     request: 0,
   };
@@ -92,6 +94,8 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
   };
 
   const installedIds = () => new Set(state.mods.map((item) => item.projectId));
+  const actionFor = (projectId) => state.actions.get(`${state.instanceId}:${projectId}`) || null;
+  const hasActions = () => state.actions.size > 0;
 
   function visibleInstalledMods() {
     const query = state.installedQuery.trim().toLowerCase();
@@ -119,13 +123,13 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
   }
 
   function renderInstalled() {
-    const locked = state.action || isRunning(getInstance()?.id);
+    const locked = isRunning(getInstance()?.id);
     if (state.loadingMods) return `<div class="mods-placeholder"><span class="spinner"></span><span>Checking installed mods...</span></div>`;
     const visible = visibleInstalledMods();
     if (!state.mods.length) return `<div class="mods-empty">No managed mods installed.</div>`;
     if (!visible.length) return `<div class="mods-empty">No mods match these filters.</div>`;
     return visible.map((item) => {
-      const activeAction = state.action?.projectId === item.projectId ? state.action : null;
+      const activeAction = actionFor(item.projectId);
       const relation = item.explicit
         ? `${item.dependencyCount ? `${item.dependencyCount} required ${item.dependencyCount === 1 ? "dependency" : "dependencies"}` : "Direct install"}`
         : `Dependency${item.requiredByCount ? ` required by ${item.requiredByCount}` : ""}`;
@@ -138,7 +142,6 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
             <span title="${escapeHtml(item.fileName)}">${escapeHtml(item.fileName)} &middot; ${formatSize(item.fileSize)}</span>
           </span>
           <span class="mod-state">
-            ${activeAction ? `<span class="mod-tag action-tag"><span class="spinner"></span>${escapeHtml(activeAction.label)}&hellip;</span>` : ""}
             ${!item.enabled ? `<span class="mod-tag">Disabled</span>` : ""}
             ${item.missing ? `<span class="mod-tag warning">Missing file</span>` : ""}
             ${!item.compatible ? `<span class="mod-tag warning">Incompatible</span>` : ""}
@@ -156,13 +159,13 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
   }
 
   function renderSearchResults() {
-    const locked = state.action || isRunning(getInstance()?.id);
-    if (state.searching) return `<div class="mods-placeholder"><span class="spinner"></span><span>Searching Modrinth...</span></div>`;
+    const locked = isRunning(getInstance()?.id);
+    if (state.searching && !state.results.length) return `<div class="mods-placeholder"><span class="spinner"></span><span>Searching Modrinth...</span></div>`;
     if (!state.results.length) return `<div class="mods-empty">No compatible mods found.</div>`;
     const installed = installedIds();
     return state.results.map((item) => {
       const isInstalled = installed.has(item.projectId);
-      const activeAction = state.action?.projectId === item.projectId ? state.action : null;
+      const activeAction = actionFor(item.projectId);
       const categories = (item.categories || []).slice(0, 3).map((category) => `<span>${escapeHtml(category.replaceAll("-", " "))}</span>`).join("");
       return `
         <article class="modrinth-result ${activeAction ? "mod-action-active" : ""}">
@@ -173,8 +176,8 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
             <span>by ${escapeHtml(item.author)} &middot; ${Number(item.downloads || 0).toLocaleString("en-US")} downloads</span>
             ${categories ? `<span class="result-categories">${categories}</span>` : ""}
           </span>
-          <button class="button ${isInstalled ? "secondary" : "primary"} ${activeAction ? "action-button" : ""}" data-install-mod="${escapeHtml(item.projectId)}" ${isInstalled || locked ? "disabled" : ""} aria-live="polite">
-            ${activeAction ? `<span class="spinner"></span>${escapeHtml(activeAction.label)}&hellip;` : `${icon(isInstalled ? "check" : "download")}${isInstalled ? "Installed" : "Install"}`}
+          <button class="button ${isInstalled ? "secondary" : "primary"} ${activeAction ? "action-button" : ""}" data-install-mod="${escapeHtml(item.projectId)}" ${isInstalled || locked || activeAction ? "disabled" : ""} aria-live="polite">
+            ${activeAction ? `<span class="spinner"></span>${escapeHtml(activeAction.phase === "queued" ? "Queued" : activeAction.label)}&hellip;` : `${icon(isInstalled ? "check" : "download")}${isInstalled ? "Installed" : "Install"}`}
           </button>
         </article>`;
     }).join("");
@@ -187,14 +190,13 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     return `
       <header class="topbar mods-topbar">
         <div><button id="mods-back" class="icon-button" aria-label="Back to instance" title="Back">${icon("back")}</button><h1>Mods</h1></div>
-        <button id="update-all-mods" class="button secondary" ${!updateCount || state.action || running ? "disabled" : ""}>${state.action?.kind === "updateAll" ? `<span class="spinner"></span>Updating&hellip;` : `${icon("refresh")}Update all${updateCount ? ` (${updateCount})` : ""}`}</button>
+        <button id="update-all-mods" class="button secondary" ${!updateCount || hasActions() || running ? "disabled" : ""}>${icon("refresh")}Update all${updateCount ? ` (${updateCount})` : ""}</button>
       </header>
       <div class="content-scroll mods-content">
         <section class="mods-instance-bar">
           <span><strong>${escapeHtml(instance.name)}</strong><small>Minecraft ${escapeHtml(instance.version)} &middot; ${loaderName(instance.loader)} &middot; ${enabledCount}/${state.mods.length} enabled</small></span>
-          <button id="refresh-mods" class="icon-button" title="Refresh mods and updates" aria-label="${state.loadingMods ? "Refreshing mods" : "Refresh mods"}" ${state.action || state.loadingMods ? "disabled" : ""}>${state.loadingMods ? `<span class="spinner"></span>` : icon("refresh")}</button>
+          <button id="refresh-mods" class="icon-button" title="Refresh mods and updates" aria-label="${state.loadingMods ? "Refreshing mods" : "Refresh mods"}" ${hasActions() || state.loadingMods ? "disabled" : ""}>${state.loadingMods ? `<span class="spinner"></span>` : icon("refresh")}</button>
         </section>
-        ${state.action ? `<div class="mods-action-feedback" role="status" aria-live="polite"><span class="spinner"></span><span><strong>${escapeHtml(state.action.label)}${state.action.title ? ` ${escapeHtml(state.action.title)}` : ""}&hellip;</strong><small>${escapeHtml(state.action.detail)}</small></span></div>` : ""}
         ${running ? `<div class="mods-running-note">${icon("warning")}<span>Stop Minecraft to install, update, enable, disable, or remove mods.</span></div>` : ""}
         ${state.error ? `<div class="mods-error">${icon("warning")}<span>${escapeHtml(state.error)}</span></div>` : ""}
         <section class="mods-section">
@@ -217,7 +219,7 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
             <div class="compact-select">${customSelect("modrinth-category", state.category, categoryOptions, "Mod category")}</div>
             <div class="compact-select">${customSelect("modrinth-sort", state.searchIndex, searchSortOptions, "Sort Modrinth results")}</div>
           </div>
-          <div class="modrinth-results">${renderSearchResults()}</div>
+          <div class="modrinth-results ${state.results.length ? "has-results" : ""} ${state.searching ? "is-loading" : ""}">${renderSearchResults()}</div>
           ${state.totalHits > 24 ? `<div class="mods-pagination"><button id="mods-previous" class="button secondary" ${state.offset === 0 || state.searching ? "disabled" : ""}>Previous</button><span>${state.offset + 1}&ndash;${Math.min(state.offset + 24, state.totalHits)} of ${state.totalHits}</span><button id="mods-next" class="button secondary" ${state.offset + 24 >= state.totalHits || state.searching ? "disabled" : ""}>Next</button></div>` : ""}
         </section>
       </div>`;
@@ -269,9 +271,39 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     }
   }
 
-  async function runAction(command, kind, projectId, successMessage, extra = {}) {
+  function syncActionButton(projectId) {
+    if (!projectId) {
+      const action = [...state.actions.values()].find((item) => item.kind === "updateAll" && item.instanceId === state.instanceId);
+      const button = document.querySelector("#update-all-mods");
+      if (action && button) {
+        button.disabled = true;
+        button.innerHTML = `<span class="spinner"></span>${escapeHtml(action.phase === "queued" ? "Queued" : action.label)}&hellip;`;
+      }
+      return;
+    }
+    const action = actionFor(projectId);
+    document.querySelectorAll(`[data-install-mod="${CSS.escape(projectId)}"]`).forEach((button) => {
+      if (!action) return;
+      button.disabled = true;
+      button.classList.add("action-button");
+      button.innerHTML = `<span class="spinner"></span>${escapeHtml(action.phase === "queued" ? "Queued" : action.label)}&hellip;`;
+    });
+    const article = document.querySelector(`[data-install-mod="${CSS.escape(projectId)}"]`)?.closest(".modrinth-result");
+    article?.classList.toggle("mod-action-active", Boolean(action));
+    const managed = document.querySelector(`[data-update-mod="${CSS.escape(projectId)}"], [data-remove-mod="${CSS.escape(projectId)}"], [data-toggle-mod="${CSS.escape(projectId)}"]`)?.closest(".managed-mod");
+    if (managed && action) {
+      managed.classList.add("mod-action-active");
+      managed.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      const selector = action.kind === "update" ? "[data-update-mod]" : action.kind === "remove" ? "[data-remove-mod]" : "[data-toggle-mod]";
+      const button = managed.querySelector(selector);
+      if (button) button.innerHTML = `<span class="spinner"></span>`;
+    }
+  }
+
+  function runAction(command, kind, projectId, successMessage, extra = {}) {
     const instance = getInstance();
-    if (!instance || state.action) return;
+    const actionId = `${instance?.id}:${projectId || `global:${kind}`}`;
+    if (!instance || state.actions.has(actionId)) return;
     if (isRunning(instance.id)) {
       notify("Stop Minecraft before changing installed mods.", "error");
       return;
@@ -279,29 +311,63 @@ export function createModsFeature({ invoke, getInstance, isRunning, icon, escape
     const copy = actionCopy[kind] || { label: "Working", detail: "Applying changes" };
     const item = state.mods.find((mod) => mod.projectId === projectId)
       || state.results.find((mod) => mod.projectId === projectId);
-    state.action = {
+    const action = {
       kind,
-      projectId: projectId || null,
+      projectId: actionId,
       title: kind === "updateAll" ? "" : (item?.title || "mod"),
       label: copy.label,
       detail: copy.detail,
+      phase: "queued",
+      instanceId: instance.id,
     };
+    state.actions.set(actionId, action);
+    state.actionQueue.push({ command, projectId, actionId, successMessage, extra, instanceId: instance.id });
     state.error = null;
-    setStatus(`${copy.label}${state.action.title ? ` ${state.action.title}` : ""}...`);
+    setStatus(`Queued ${action.title || "mod action"}.`);
+    syncActionButton(projectId);
+    pumpActions();
+  }
+
+  function pumpActions() {
+    while (state.activeActions < 2 && state.actionQueue.length) {
+      const job = state.actionQueue.shift();
+      const action = state.actions.get(job.actionId);
+      if (!action) continue;
+      state.activeActions += 1;
+      action.phase = "active";
+      syncActionButton(job.projectId);
+      void executeAction(job, action);
+    }
+  }
+
+  function rerenderAnchored(projectId) {
+    const selector = projectId ? `[data-install-mod="${CSS.escape(projectId)}"]` : null;
+    const before = selector ? document.querySelector(selector)?.closest(".modrinth-result")?.getBoundingClientRect().top : null;
     rerender();
+    if (before == null || !selector) return;
+    const after = document.querySelector(selector)?.closest(".modrinth-result")?.getBoundingClientRect().top;
+    const scroller = document.querySelector(".content-scroll");
+    if (after != null && scroller) scroller.scrollTop += after - before;
+  }
+
+  async function executeAction(job, action) {
+    setStatus(`${action.label}${action.title ? ` ${action.title}` : ""}...`);
     try {
-      const args = { instanceId: instance.id, ...extra };
-      if (projectId) args.projectId = projectId;
-      state.mods = await invoke(command, args);
-      notify(successMessage, "success");
-      setStatus(successMessage);
+      const args = { instanceId: job.instanceId, ...job.extra };
+      if (job.projectId) args.projectId = job.projectId;
+      const mods = await invoke(job.command, args);
+      if (state.instanceId === job.instanceId) state.mods = mods;
+      notify(job.successMessage, "success");
+      setStatus(job.successMessage);
     } catch (error) {
       state.error = cleanError(error);
       notify(state.error, "error");
       setStatus(`Action failed: ${state.error}`);
     } finally {
-      state.action = null;
-      rerender();
+      state.actions.delete(job.actionId);
+      state.activeActions -= 1;
+      rerenderAnchored(job.projectId);
+      pumpActions();
     }
   }
 

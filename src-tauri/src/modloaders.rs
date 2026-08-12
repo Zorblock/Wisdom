@@ -1,3 +1,4 @@
+use crate::downloads::{DownloadJob, download_jobs};
 use crate::instances::Instance;
 use crate::minecraft::{LaunchOptions, ProgressReporter, parse_extra_arguments};
 use crate::storage::{AuthState, http};
@@ -5,18 +6,16 @@ use anyhow::{Context, Result, bail};
 use mc_launcher_core::account::Account;
 use mc_launcher_core::command::builder::LaunchOptions as CoreLaunchOptions;
 use mc_launcher_core::core::version::VersionJson;
-use mc_launcher_core::install::client::install_version_files;
 use mc_launcher_core::install::loader::{
     InstallerInvocation, run_loader_installer, write_loader_profile,
 };
-use mc_launcher_core::install::request::InstallRequest;
 use mc_launcher_core::launcher::Launcher;
 use mc_launcher_core::loader::{LoaderKind, fabric, forge, neoforge, quilt};
-use mc_launcher_core::progress::{InstallStage, ProgressEvent};
+use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -103,7 +102,7 @@ pub fn install_and_launch(
     auth: &AuthState,
     options: &LaunchOptions,
     report: &(dyn Fn(String) + Send + Sync),
-    progress: &ProgressReporter,
+    progress: &ProgressReporter<'_>,
 ) -> Result<ModdedLaunch> {
     if !instance.loader.supports_mods() {
         bail!("A mod loader was not selected");
@@ -115,12 +114,11 @@ pub fn install_and_launch(
         instance.loader.pretty_name(),
         instance.version
     ));
-    let mut vanilla_reporter = core_progress(progress, 0.0, 0.42);
-    launcher
-        .install_with_progress(
-            InstallRequest::vanilla(&instance.version),
-            &mut vanilla_reporter,
-        )
+    let client = http()?;
+    let vanilla_progress = |value: f32, message: String| {
+        progress(value * 0.42, message);
+    };
+    crate::minecraft_install::install_vanilla(&client, root, &instance.version, &vanilla_progress)
         .context("Could not install the Minecraft base version")?;
     let vanilla = launcher
         .load_version(&instance.version)
@@ -130,13 +128,15 @@ pub fn install_and_launch(
         .as_ref()
         .map(|version| version.major_version.max(8) as u32)
         .unwrap_or(8);
-    let java = crate::runtime::ensure_java(root, java_major, progress)?;
+    let java_progress = |value: f32, message: String| progress(0.42 + value * 0.04, message);
+    let java = crate::runtime::ensure_java(root, java_major, &java_progress)?;
 
     progress(
         0.45,
         format!("Installing {}...", instance.loader.pretty_name()),
     );
-    let (profile_id, loader_version) = install_loader(&launcher, root, instance, &java, progress)?;
+    let (profile_id, loader_version) =
+        install_loader(&client, &launcher, root, instance, &java, progress)?;
     let version = launcher
         .load_version(&profile_id)
         .with_context(|| format!("Could not load the {profile_id} profile"))?;
@@ -219,14 +219,14 @@ pub fn install_and_launch(
 }
 
 fn install_loader(
+    client: &Client,
     launcher: &Launcher,
     root: &Path,
     instance: &Instance,
     java: &Path,
-    progress: &ProgressReporter,
+    progress: &ProgressReporter<'_>,
 ) -> Result<(String, String)> {
     let requested = instance.loader_version.clone();
-    let mut reporter = core_progress(progress, 0.46, 0.88);
     match instance.loader {
         ModLoader::Vanilla => bail!("A mod loader was not selected"),
         ModLoader::Fabric => {
@@ -238,7 +238,11 @@ fn install_loader(
             };
             let profile = fabric::fetch_profile(&instance.version, &loader_version)
                 .context("Fabric does not support this Minecraft version")?;
-            let profile_id = write_and_install_profile(launcher, root, &profile, &mut reporter)?;
+            let profile_progress = |value: f32, message: String| {
+                progress(0.46 + value * 0.42, message);
+            };
+            let profile_id =
+                write_and_install_profile(client, launcher, root, &profile, &profile_progress)?;
             Ok((profile_id, loader_version))
         }
         ModLoader::Quilt => {
@@ -250,7 +254,11 @@ fn install_loader(
             };
             let profile = quilt::fetch_profile(&instance.version, &loader_version)
                 .context("Quilt does not support this Minecraft version")?;
-            let profile_id = write_and_install_profile(launcher, root, &profile, &mut reporter)?;
+            let profile_progress = |value: f32, message: String| {
+                progress(0.46 + value * 0.42, message);
+            };
+            let profile_id =
+                write_and_install_profile(client, launcher, root, &profile, &profile_progress)?;
             Ok((profile_id, loader_version))
         }
         ModLoader::Forge => {
@@ -261,13 +269,17 @@ fn install_loader(
                     forge::latest_for_minecraft(&versions, &instance.version)?.to_owned()
                 }
             };
+            let installer_progress = |value: f32, message: String| {
+                progress(0.46 + value * 0.12, message);
+            };
             let installer = download_installer(
                 root,
                 "forge",
                 &loader_version,
                 &forge::installer_url(&loader_version),
-                progress,
+                &installer_progress,
             )?;
+            progress(0.59, "Installing Forge...".to_owned());
             run_loader_installer(&InstallerInvocation {
                 loader: LoaderKind::Forge,
                 java_executable: java.to_path_buf(),
@@ -276,7 +288,10 @@ fn install_loader(
             })?;
             let profile_id = forge::forge_installed_version_id(&loader_version)?;
             let profile = launcher.load_version(&profile_id)?;
-            install_version_files(&profile, root, &mut reporter)?;
+            let profile_progress = |value: f32, message: String| {
+                progress(0.60 + value * 0.28, message);
+            };
+            crate::minecraft_install::install_profile(client, root, &profile, &profile_progress)?;
             Ok((profile_id, loader_version))
         }
         ModLoader::Neoforge => {
@@ -287,13 +302,17 @@ fn install_loader(
                     neoforge::latest_for_minecraft(&versions, &instance.version)?.to_owned()
                 }
             };
+            let installer_progress = |value: f32, message: String| {
+                progress(0.46 + value * 0.12, message);
+            };
             let installer = download_installer(
                 root,
                 "neoforge",
                 &loader_version,
                 &neoforge::installer_url(&loader_version),
-                progress,
+                &installer_progress,
             )?;
+            progress(0.59, "Installing NeoForge...".to_owned());
             run_loader_installer(&InstallerInvocation {
                 loader: LoaderKind::NeoForge,
                 java_executable: java.to_path_buf(),
@@ -303,17 +322,21 @@ fn install_loader(
             let profile_id =
                 neoforge::neoforge_installed_version_id(&instance.version, &loader_version);
             let profile = launcher.load_version(&profile_id)?;
-            install_version_files(&profile, root, &mut reporter)?;
+            let profile_progress = |value: f32, message: String| {
+                progress(0.60 + value * 0.28, message);
+            };
+            crate::minecraft_install::install_profile(client, root, &profile, &profile_progress)?;
             Ok((profile_id, loader_version))
         }
     }
 }
 
 fn write_and_install_profile(
+    client: &Client,
     launcher: &Launcher,
     root: &Path,
     profile: &VersionJson,
-    reporter: &mut dyn mc_launcher_core::progress::ProgressReporter,
+    progress: &ProgressReporter<'_>,
 ) -> Result<String> {
     let profile_id = profile
         .id
@@ -321,37 +344,8 @@ fn write_and_install_profile(
         .context("Loader profile has no version ID")?;
     write_loader_profile(root, profile)?;
     let merged = launcher.load_version(&profile_id)?;
-    install_version_files(&merged, root, reporter)?;
+    crate::minecraft_install::install_profile(client, root, &merged, progress)?;
     Ok(profile_id)
-}
-
-fn core_progress<'a>(
-    progress: &'a ProgressReporter,
-    start: f32,
-    end: f32,
-) -> impl FnMut(ProgressEvent) + 'a {
-    move |event| {
-        let message = match event {
-            ProgressEvent::StageStarted { stage } => stage_message(stage),
-            ProgressEvent::TaskStarted { label, .. } => format!("Downloading {label}..."),
-            ProgressEvent::TaskFinished { label } => format!("{label} is ready."),
-            ProgressEvent::TaskSkipped { .. } | ProgressEvent::BytesReceived { .. } => return,
-        };
-        progress(start + (end - start) * 0.5, message);
-    }
-}
-
-fn stage_message(stage: InstallStage) -> String {
-    match stage {
-        InstallStage::ResolveVersion => "Resolving Minecraft version...",
-        InstallStage::DownloadLibraries => "Checking loader libraries...",
-        InstallStage::DownloadAssets => "Checking game assets...",
-        InstallStage::InstallRuntime => "Preparing Java...",
-        InstallStage::ExtractNatives => "Preparing Windows components...",
-        InstallStage::LoaderInstall => "Installing mod loader...",
-        InstallStage::Verify => "Verifying the installation...",
-    }
-    .to_owned()
 }
 
 fn download_installer(
@@ -359,7 +353,7 @@ fn download_installer(
     loader: &str,
     version: &str,
     url: &str,
-    progress: &ProgressReporter,
+    progress: &ProgressReporter<'_>,
 ) -> Result<PathBuf> {
     let destination = root
         .join("versions")
@@ -368,48 +362,23 @@ fn download_installer(
     if destination.is_file() && destination.metadata()?.len() > 0 {
         return Ok(destination);
     }
-    fs::create_dir_all(
-        destination
-            .parent()
-            .context("Installer path has no parent")?,
+    download_jobs(
+        &http()?,
+        vec![DownloadJob {
+            url: url.to_owned(),
+            destination: destination.clone(),
+            checksum: None,
+        }],
+        &format!("{loader} installer"),
+        progress,
     )?;
-    let mut response = http()?.get(url).send()?.error_for_status()?;
-    let total = response.content_length().unwrap_or(0);
-    let temporary = destination.with_extension("download");
-    let mut output = File::create(&temporary)?;
-    let mut received = 0u64;
-    let mut buffer = [0u8; 131_072];
-    loop {
-        let count = response.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        output.write_all(&buffer[..count])?;
-        received += count as u64;
-        let amount = if total == 0 {
-            0.0
-        } else {
-            received as f32 / total as f32
-        };
-        progress(
-            0.46 + amount * 0.16,
-            format!(
-                "Downloading {loader} installer · {}%",
-                (amount * 100.0) as u32
-            ),
-        );
-    }
-    if destination.exists() {
-        fs::remove_file(&destination)?;
-    }
-    fs::rename(temporary, &destination)?;
     Ok(destination)
 }
 
 fn prepare_logging(
     root: &Path,
     version: &VersionJson,
-    progress: &ProgressReporter,
+    progress: &ProgressReporter<'_>,
 ) -> Result<Option<String>> {
     let Some(logging) = version.logging.get("client") else {
         return Ok(None);
